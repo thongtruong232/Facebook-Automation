@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { sanitizeError } from "../lib/constants";
+import { fail } from "./api-response";
 import { getErrorMessage } from "./errors";
-import { jsonResponse } from "./http";
 
 export async function readRequestInput(request: Request): Promise<Record<string, string>> {
   const contentType = request.headers.get("content-type") ?? "";
@@ -27,11 +27,5 @@ export function apiError(error: unknown): Response {
       ? error.statusCode
       : 500;
 
-  return jsonResponse(
-    {
-      error: getErrorMessage(error),
-      details: sanitizeError(error)
-    },
-    { status: statusCode }
-  );
+  return fail(getErrorMessage(error), statusCode, sanitizeError(error));
 }

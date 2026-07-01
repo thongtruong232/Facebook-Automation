@@ -51,10 +51,26 @@ export async function logError(input: Omit<CreateJobLogInput, "level">): Promise
   await createJobLog({ ...input, level: "ERROR" });
 }
 
-export async function listLogs(limit = 100) {
+export async function listLogs(
+  filters:
+    | number
+    | {
+        jobId?: string;
+        socialPostId?: string;
+        level?: LogLevel;
+        limit?: number;
+      } = 100
+) {
+  const normalized = typeof filters === "number" ? { limit: filters } : filters;
+
   return prisma.jobLog.findMany({
     orderBy: { createdAt: "desc" },
-    take: limit,
+    take: normalized.limit ?? 100,
+    where: {
+      jobId: normalized.jobId,
+      socialPostId: normalized.socialPostId,
+      level: normalized.level
+    },
     include: {
       job: { select: { runId: true, status: true } },
       socialPost: { select: { caption: true, status: true } }

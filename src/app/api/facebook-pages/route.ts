@@ -1,10 +1,10 @@
-import { apiError, readRequestInput, redirectTo } from "@/server/api";
-import { jsonResponse } from "@/server/http";
+import { apiError, readRequestInput } from "@/server/api";
+import { ok } from "@/server/api-response";
 import { createPage, listPages } from "@/server/services/page.service";
 
 export async function GET() {
   try {
-    return jsonResponse(await listPages());
+    return ok(await listPages());
   } catch (error) {
     return apiError(error);
   }
@@ -12,8 +12,8 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    await createPage(await readRequestInput(request));
-    return redirectTo(request, "/pages");
+    const page = await createPage(await readRequestInput(request));
+    return ok(page, { status: 201 });
   } catch (error) {
     return apiError(error);
   }

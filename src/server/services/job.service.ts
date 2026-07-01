@@ -1,4 +1,4 @@
-import type { Prisma, PublishJob } from "@prisma/client";
+import type { Prisma, PublishJob, PublishJobStatus } from "@prisma/client";
 import { sanitizeError } from "../../lib/constants";
 import { addBackoffDelay } from "../../lib/time";
 import { getErrorCode, getErrorMessage, isRetryableError, ValidationError } from "../errors";
@@ -190,7 +190,7 @@ export async function cancelPendingJobsForPost(postId: string): Promise<void> {
 
 export async function retryLatestJobForPost(postId: string): Promise<void> {
   const job = await prisma.publishJob.findFirst({
-    where: { socialPostId: postId },
+    where: { socialPostId: postId, status: "FAILED" },
     orderBy: { createdAt: "desc" },
     select: { id: true }
   });
@@ -198,6 +198,26 @@ export async function retryLatestJobForPost(postId: string): Promise<void> {
   if (job) {
     await retryJob(job.id);
     return;
+  }
+
+  const post = await prisma.socialPost.findUnique({
+    where: { id: postId },
+    select: { status: true }
+  });
+
+  if (!post) {
+    throw new ValidationError("Social post was not found.", "POST_NOT_FOUND", 404);
+  }
+
+  if (post.status === "PUBLISHED") {
+    throw new ValidationError("Published posts cannot be retried.", "IDEMPOTENCY_GUARD");
+  }
+
+  if (post.status === "FAILED") {
+    await prisma.socialPost.update({
+      where: { id: postId },
+      data: { status: "READY", lastError: null }
+    });
   }
 
   await createPublishJobForPost(postId);
@@ -213,8 +233,12 @@ export async function retryLatestJobForPost(postId: string): Promise<void> {
 export async function cancelJob(jobId: string): Promise<void> {
   const job = await prisma.publishJob.findUniqueOrThrow({
     where: { id: jobId },
-    select: { socialPostId: true }
+    select: { socialPostId: true, status: true }
   });
+
+  if (job.status !== "PENDING") {
+    throw new ValidationError("Only pending jobs can be cancelled.", "JOB_NOT_CANCELABLE");
+  }
 
   await prisma.$transaction([
     prisma.publishJob.update({
@@ -244,17 +268,45 @@ export async function markJobRunning(jobId: string): Promise<void> {
 }
 
 export async function listJobs() {
+  return listPublishJobs();
+}
+
+export async function listPublishJobs(filters: { status?: PublishJobStatus; limit?: number } = {}) {
   return prisma.publishJob.findMany({
     orderBy: { runAt: "desc" },
-    take: 100,
+    take: filters.limit ?? 100,
+    where: { status: filters.status },
     include: {
       socialPost: {
         select: {
+          id: true,
           caption: true,
           status: true,
+          mediaAsset: { select: { filename: true, originalName: true } },
           facebookPage: { select: { name: true } }
         }
       }
     }
   });
+}
+
+export async function getPublishJob(jobId: string) {
+  const job = await prisma.publishJob.findUnique({
+    where: { id: jobId },
+    include: {
+      jobLogs: { orderBy: { createdAt: "desc" } },
+      socialPost: {
+        include: {
+          facebookPage: { select: { id: true, name: true, pageId: true, status: true } },
+          mediaAsset: { select: { id: true, filename: true, originalName: true, status: true, type: true } }
+        }
+      }
+    }
+  });
+
+  if (!job) {
+    throw new ValidationError("Publish job was not found.", "JOB_NOT_FOUND", 404);
+  }
+
+  return job;
 }

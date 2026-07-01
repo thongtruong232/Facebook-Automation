@@ -1,4 +1,5 @@
-import { apiError, redirectTo } from "@/server/api";
+import { apiError } from "@/server/api";
+import { fail, ok } from "@/server/api-response";
 import { createMediaFromUpload } from "@/server/services/media.service";
 
 export async function POST(request: Request) {
@@ -6,11 +7,11 @@ export async function POST(request: Request) {
     const formData = await request.formData();
     const file = formData.get("file");
     if (!(file instanceof File)) {
-      return new Response("Missing upload file.", { status: 400 });
+      return fail("Missing upload file.", 400);
     }
 
-    await createMediaFromUpload(file);
-    return redirectTo(request, "/media");
+    const media = await createMediaFromUpload(file);
+    return ok(media, { status: 201 });
   } catch (error) {
     return apiError(error);
   }

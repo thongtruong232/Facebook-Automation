@@ -1,51 +1,94 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
 import { RefreshCcw } from "lucide-react";
 import { EmptyState } from "../_components/empty-state";
 import { StatusBadge } from "../_components/status-badge";
-import { formatDateTime } from "@/lib/time";
-import { getDashboardSummary } from "@/server/services/dashboard.service";
+import { apiGet } from "@/lib/client-api";
+import { formatDate, truncate } from "@/lib/format";
 
-export const dynamic = "force-dynamic";
+type DashboardSummary = {
+  scheduledToday: number;
+  publishedToday: number;
+  failedToday: number;
+  pendingJobs: number;
+  runningJobs: number;
+  totalPages: number;
+  totalMedia: number;
+  lastSuccessfulPublish: { publishedAt: string | null; facebookPage: { name: string } } | null;
+  lastFailedPublish: { lastError: string | null; facebookPage: { name: string } } | null;
+  upcomingPosts: Array<{
+    id: string;
+    caption: string;
+    scheduledAt: string;
+    status: string;
+    facebookPage: { name: string };
+  }>;
+  recentFailedJobs: Array<{
+    id: string;
+    runId: string;
+    errorMessage: string | null;
+    socialPost: { caption: string };
+  }>;
+};
 
-async function loadDashboard() {
-  try {
-    return { data: await getDashboardSummary(), error: null };
-  } catch (error) {
-    return {
-      data: {
-        scheduledToday: 0,
-        publishedToday: 0,
-        failedToday: 0,
-        pendingJobs: 0,
-        lastSuccessfulPublish: null,
-        lastFailedPublish: null,
-        upcomingPosts: [],
-        recentFailedJobs: []
-      },
-      error: error instanceof Error ? error.message : "Database is not available."
-    };
-  }
-}
+const emptyDashboard: DashboardSummary = {
+  scheduledToday: 0,
+  publishedToday: 0,
+  failedToday: 0,
+  pendingJobs: 0,
+  runningJobs: 0,
+  totalPages: 0,
+  totalMedia: 0,
+  lastSuccessfulPublish: null,
+  lastFailedPublish: null,
+  upcomingPosts: [],
+  recentFailedJobs: []
+};
 
-export default async function DashboardPage() {
-  const { data, error } = await loadDashboard();
+export default function DashboardPage() {
+  const [data, setData] = useState<DashboardSummary>(emptyDashboard);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const loadDashboard = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setData(await apiGet<DashboardSummary>("/api/dashboard"));
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Dashboard is not available.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard]);
+
   const stats = [
     ["Scheduled today", data.scheduledToday],
     ["Published today", data.publishedToday],
     ["Failed today", data.failedToday],
-    ["Pending jobs", data.pendingJobs]
+    ["Pending jobs", data.pendingJobs],
+    ["Running jobs", data.runningJobs],
+    ["Total pages", data.totalPages],
+    ["Total media", data.totalMedia]
   ];
 
   return (
     <>
       <div className="page-header">
         <h1 className="page-title">Dashboard</h1>
-        <a className="button" href="/dashboard">
+        <button className="button" type="button" onClick={loadDashboard} disabled={loading}>
           <RefreshCcw size={16} aria-hidden="true" />
           Refresh
-        </a>
+        </button>
       </div>
 
       {error ? <div className="error-note">{error}</div> : null}
+      {loading ? <div className="empty">Loading dashboard...</div> : null}
 
       <section className="stats-grid">
         {stats.map(([label, value]) => (
@@ -73,9 +116,9 @@ export default async function DashboardPage() {
                 <tbody>
                   {data.upcomingPosts.map((post) => (
                     <tr key={post.id}>
-                      <td className="caption-preview">{post.caption}</td>
+                      <td>{truncate(post.caption, 72)}</td>
                       <td>{post.facebookPage.name}</td>
-                      <td>{formatDateTime(post.scheduledAt)}</td>
+                      <td>{formatDate(post.scheduledAt)}</td>
                       <td>
                         <StatusBadge status={post.status} />
                       </td>
@@ -96,22 +139,26 @@ export default async function DashboardPage() {
               <p>
                 {data.lastSuccessfulPublish.facebookPage.name}
                 <br />
-                <span className="muted">{formatDateTime(data.lastSuccessfulPublish.publishedAt)}</span>
+                <span className="muted">{formatDate(data.lastSuccessfulPublish.publishedAt)}</span>
               </p>
             ) : (
               <EmptyState label="No successful publish yet" />
             )}
           </div>
           <div className="panel">
-            <h2 className="panel-title">Last Failed Publish</h2>
-            {data.lastFailedPublish ? (
-              <p>
-                {data.lastFailedPublish.facebookPage.name}
-                <br />
-                <span className="muted">{data.lastFailedPublish.lastError ?? "Unknown error"}</span>
-              </p>
+            <h2 className="panel-title">Recent Failed Jobs</h2>
+            {data.recentFailedJobs.length ? (
+              <div className="grid">
+                {data.recentFailedJobs.map((job) => (
+                  <div key={job.id}>
+                    <strong>{truncate(job.socialPost.caption, 48)}</strong>
+                    <br />
+                    <span className="muted">{job.errorMessage ?? job.runId}</span>
+                  </div>
+                ))}
+              </div>
             ) : (
-              <EmptyState label="No failed publish yet" />
+              <EmptyState label="No failed jobs" />
             )}
           </div>
         </div>

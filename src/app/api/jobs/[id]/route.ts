@@ -1,11 +1,10 @@
 import { apiError } from "@/server/api";
 import { ok } from "@/server/api-response";
-import { cancelJob, getPublishJob } from "@/server/services/job.service";
+import { getPublishJob } from "@/server/services/job.service";
 
-export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    await cancelJob(id);
     return ok(await getPublishJob(id));
   } catch (error) {
     return apiError(error);

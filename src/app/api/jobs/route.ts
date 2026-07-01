@@ -1,10 +1,19 @@
+import type { PublishJobStatus } from "@prisma/client";
 import { apiError } from "@/server/api";
-import { jsonResponse } from "@/server/http";
-import { listJobs } from "@/server/services/job.service";
+import { ok } from "@/server/api-response";
+import { listPublishJobs } from "@/server/services/job.service";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    return jsonResponse(await listJobs());
+    const { searchParams } = new URL(request.url);
+    const status = searchParams.get("status") as PublishJobStatus | null;
+    const limit = Number(searchParams.get("limit") ?? "100");
+    return ok(
+      await listPublishJobs({
+        status: status ?? undefined,
+        limit: Number.isFinite(limit) ? limit : 100
+      })
+    );
   } catch (error) {
     return apiError(error);
   }
