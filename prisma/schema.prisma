@@ -1,0 +1,229 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+enum PageStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum MediaType {
+  VIDEO
+  IMAGE
+}
+
+enum MediaStatus {
+  READY
+  PROCESSING
+  FAILED
+  DELETED
+}
+
+enum SocialPostType {
+  REEL
+  VIDEO
+  POST
+}
+
+enum SocialPostStatus {
+  DRAFT
+  READY
+  QUEUED
+  PROCESSING
+  PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+enum PublishJobStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
+enum JobType {
+  PUBLISH_REEL
+}
+
+enum LogLevel {
+  DEBUG
+  INFO
+  WARNING
+  ERROR
+  CRITICAL
+}
+
+model User {
+  id           String       @id @default(uuid()) @db.Uuid
+  email        String       @unique
+  passwordHash String       @map("password_hash")
+  role         UserRole     @default(EDITOR)
+  status       String       @default("active")
+  posts        SocialPost[]
+  auditLogs    AuditLog[]
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([role, status])
+  @@map("users")
+}
+
+model FacebookPage {
+  id                   String       @id @default(uuid()) @db.Uuid
+  pageId               String       @unique @map("page_id")
+  name                 String
+  accessTokenEncrypted String       @map("access_token_encrypted")
+  tokenStatus          String       @default("unknown") @map("token_status")
+  status               PageStatus   @default(ACTIVE)
+  dailyLimit           Int          @default(30) @map("daily_limit")
+  timezone             String       @default("Asia/Ho_Chi_Minh")
+  lastTokenCheckAt     DateTime?    @map("last_token_check_at") @db.Timestamptz(6)
+  lastError            String?      @map("last_error")
+  posts                SocialPost[]
+  createdAt            DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status])
+  @@index([tokenStatus])
+  @@map("facebook_pages")
+}
+
+model MediaAsset {
+  id              String       @id @default(uuid()) @db.Uuid
+  type            MediaType
+  filename        String
+  originalName    String?      @map("original_name")
+  storageDisk     String       @default("local") @map("storage_disk")
+  storagePath     String       @map("storage_path")
+  publicUrl       String?      @map("public_url")
+  mimeType        String?      @map("mime_type")
+  sizeBytes       BigInt?      @map("size_bytes")
+  durationSeconds Int?         @map("duration_seconds")
+  status          MediaStatus  @default(READY)
+  metadataJson    Json?        @map("metadata_json")
+  posts           SocialPost[]
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([type, status])
+  @@map("media_assets")
+}
+
+model SocialPost {
+  id               String           @id @default(uuid()) @db.Uuid
+  facebookPageId   String           @map("facebook_page_id") @db.Uuid
+  mediaAssetId     String?          @map("media_asset_id") @db.Uuid
+  type             SocialPostType   @default(REEL)
+  caption          String
+  scheduledAt      DateTime         @map("scheduled_at") @db.Timestamptz(6)
+  status           SocialPostStatus @default(DRAFT)
+  attempts         Int              @default(0)
+  maxAttempts      Int              @default(3) @map("max_attempts")
+  facebookVideoId  String?          @map("facebook_video_id")
+  facebookPostId   String?          @map("facebook_post_id")
+  lastError        String?          @map("last_error")
+  publishedAt      DateTime?        @map("published_at") @db.Timestamptz(6)
+  dryRunCheckedAt  DateTime?        @map("dry_run_checked_at") @db.Timestamptz(6)
+  internalNote     String?          @map("internal_note")
+  hashtags         String?
+  createdById      String?          @map("created_by") @db.Uuid
+  facebookPage     FacebookPage     @relation(fields: [facebookPageId], references: [id])
+  mediaAsset       MediaAsset?      @relation(fields: [mediaAssetId], references: [id])
+  createdBy        User?            @relation(fields: [createdById], references: [id])
+  publishJobs      PublishJob[]
+  jobLogs          JobLog[]
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, scheduledAt])
+  @@index([facebookPageId, status])
+  @@index([mediaAssetId])
+  @@map("social_posts")
+}
+
+model PublishJob {
+  id              String           @id @default(uuid()) @db.Uuid
+  runId           String           @unique @default(uuid()) @map("run_id")
+  socialPostId    String           @map("social_post_id") @db.Uuid
+  jobType         JobType          @default(PUBLISH_REEL) @map("job_type")
+  status          PublishJobStatus @default(PENDING)
+  runAt           DateTime         @map("run_at") @db.Timestamptz(6)
+  startedAt       DateTime?        @map("started_at") @db.Timestamptz(6)
+  finishedAt      DateTime?        @map("finished_at") @db.Timestamptz(6)
+  attempts        Int              @default(0)
+  maxAttempts     Int              @default(3) @map("max_attempts")
+  lockedAt        DateTime?        @map("locked_at") @db.Timestamptz(6)
+  lockedBy        String?          @map("locked_by")
+  errorCode       String?          @map("error_code")
+  errorMessage    String?          @map("error_message")
+  rawResponseJson Json?            @map("raw_response_json")
+  socialPost      SocialPost       @relation(fields: [socialPostId], references: [id])
+  logs            JobLog[]
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, runAt])
+  @@index([socialPostId, status])
+  @@index([lockedAt])
+  @@map("publish_jobs")
+}
+
+model JobLog {
+  id           String       @id @default(uuid()) @db.Uuid
+  jobId        String?      @map("job_id") @db.Uuid
+  socialPostId String?      @map("social_post_id") @db.Uuid
+  level        LogLevel
+  step         String
+  message      String
+  metaJson     Json?        @map("meta_json")
+  job          PublishJob?  @relation(fields: [jobId], references: [id])
+  socialPost   SocialPost?  @relation(fields: [socialPostId], references: [id])
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([jobId, createdAt])
+  @@index([socialPostId, createdAt])
+  @@index([level, step])
+  @@map("job_logs")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String?  @map("user_id") @db.Uuid
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String?  @map("entity_id")
+  beforeJson  Json?    @map("before_json")
+  afterJson   Json?    @map("after_json")
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  user        User?    @relation(fields: [userId], references: [id])
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([entityType, entityId])
+  @@index([userId, createdAt])
+  @@map("audit_logs")
+}
+
+model Setting {
+  id          String   @id @default(uuid()) @db.Uuid
+  key         String   @unique
+  value       Json
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("settings")
+}
