@@ -1,174 +1,222 @@
-# CLAUDE.md — Facebook Page/Reels Automation Platform
+# Facebook Page/Reels Automation Platform
 
-> Mục tiêu: xây dựng một website quản trị + worker tự động đăng Facebook Page/Reels bằng Meta Graph API. Website thay thế Google Sheet, dùng để quản lý Page, media/video, caption, lịch đăng, queue/job, log, retry, alert và token.
+Last updated: 2026-07-01
 
----
+## 1. Project Overview
 
-## 0. Vai trò của Claude trong project này
+This project is an internal admin website for managing Facebook Page/Reels publishing automation through the official Meta Graph API path.
 
-Bạn là **Senior Full-stack Automation Engineer**. Khi làm việc trong repo này, hãy ưu tiên:
+The website is used to:
 
-1. Thiết kế hệ thống chạy thật, có log, retry, idempotency, alert.
-2. Ưu tiên **Meta Graph API chính thức** cho Facebook Page/Reels.
-3. Không dùng browser automation để tự động đăng hàng loạt lên Facebook.
-4. Không hard-code token, cookie, password hoặc Page Access Token.
-5. Mọi workflow có quyền ghi dữ liệu phải có `DRY_RUN`, log và rollback hoặc retry an toàn.
-6. Không xây chức năng auto-post vào Facebook Groups bằng API vì Facebook Groups API đã bị loại bỏ khỏi Graph API từ 2024.
-7. Khi API Meta thay đổi, phải kiểm tra lại docs chính thức trước khi sửa code.
+- Manage Facebook Pages.
+- Store Page Access Tokens in encrypted form.
+- Upload and manage local video/media assets.
+- Create captions and SocialPosts.
+- Schedule Reels/video posts.
+- Create PublishJobs.
+- Run a background worker that processes due jobs.
+- Write JobLogs for each important worker step.
+- Retry/cancel jobs.
+- Watch basic dashboard metrics.
 
----
+Important boundary:
 
-## 1. Phạm vi project
+- The UI must not publish directly inside a browser request.
+- The UI creates data and jobs only.
+- The worker is the only place that handles publishing.
+- Facebook Groups automation is out of scope.
+- Browser automation for Facebook posting is out of scope.
 
-### 1.1. Có trong scope
+## 2. Current Implementation Status
 
-- Website admin để quản lý automation.
-- Quản lý Facebook Pages.
-- Quản lý Page Access Token dạng mã hóa.
-- Upload và quản lý video/media.
-- Tạo bài Reels/video post.
-- Lên lịch đăng Page/Reels.
-- Worker tự động publish Reels bằng Meta Graph API.
-- Queue job: pending, running, success, failed, cancelled.
-- Retry/backoff cho lỗi tạm thời.
-- Dashboard thống kê.
-- Log từng bước.
-- Alert Telegram/Gmail khi lỗi.
-- Docker Compose deploy.
+| Area | Status | Notes |
+|---|---|---|
+| Prisma schema | Done | Models, enums, relations, indexes, and migrations exist. |
+| Database seed | Done | `prisma/seed.ts` creates admin user, test Page, sample media, SocialPost, and PublishJob. |
+| Token encryption | Done | AES-256-GCM in `src/lib/crypto.ts`; tokens are not stored plaintext. |
+| Meta service mock | Done / Mock | `MetaService` supports DRY_RUN mock publish and token test; real Meta calls are not implemented. |
+| Worker | Partial | DB-backed worker scans due jobs, locks, validates, calls mock, updates status, logs. BullMQ is configured but not actively used by the worker. |
+| API routes | Partial | Many route handlers exist. They were being moved to `{ success, data }` JSON responses. Needs final verification after current type errors are fixed. |
+| Dashboard UI | Improved | `/dashboard` uses the shared admin shell, metric cards, upcoming posts, failed job actions, empty/error states, and client refresh. |
+| Page management UI | Improved | `/pages` no longer renders tokens or `maskedToken`; create/edit/test-token/disable actions use JSON API calls with feedback. |
+| Media upload UI | Improved | `/media` has a clear upload card, selected-file preview, media table, copy path, archive action, and feedback states. |
+| Post scheduling UI | Improved | `/posts` and `/posts/new` use client-side form/actions, filters, preview/checklist, status badges, confirm, and redirects instead of raw JSON form posts. |
+| Jobs UI | Improved | `/jobs` has filters, retry/cancel actions with confirmation, status badges, error truncation, and log links. |
+| Logs UI | Improved | `/logs` has level/job/post/limit filters and expandable sanitized metadata. |
+| Settings UI | Improved | `/settings` shows safe read-only environment values and hides secrets. |
+| Users UI | Missing / Placeholder | `/users` exists as an empty placeholder. No auth/users management. |
+| Auth | Missing | No login/session/RBAC middleware. Do not expose publicly. |
+| Real Meta API | Missing / Mock only | `DRY_RUN=false` throws `MetaApiNotImplementedError`. |
+| Telegram alert | Missing | Env vars exist; no alert service. |
+| S3/Wasabi storage | Missing | Local filesystem only. |
+| Docker Compose | Partial | `app`, `worker`, `postgres`, `redis` services exist. Production reverse proxy/HTTPS not included. |
 
-### 1.2. Không nằm trong scope
-
-- Auto-post vào Facebook Groups bằng API.
-- Auto-post vào group bằng Playwright/Selenium/Puppeteer.
-- Dùng cookie/session Facebook cá nhân để đăng tự động.
-- Bypass checkpoint, CAPTCHA, anti-bot, rate limit hoặc access control.
-- Spam nhiều group/page bằng nội dung trùng lặp.
-- Lưu token ở client/browser localStorage.
-
----
-
-## 2. Bối cảnh kỹ thuật Facebook/Meta
-
-### 2.1. Page/Reels
-
-Facebook Page/Reels có thể tự động hóa bằng **Meta Graph API** và **Facebook Reels Publishing API** nếu app có quyền hợp lệ và Page Access Token hợp lệ.
-
-Luồng publish Reels cơ bản:
+Current typecheck status:
 
 ```text
-1. Start upload session
-2. Upload video binary
-3. Finish/publish Reel
-4. Poll/check status nếu cần
-5. Save result vào database
+npm run typecheck passes after the admin UI/API contract cleanup.
 ```
 
-Endpoint logic thường dùng:
+## 3. Completed Features
 
-```http
-POST /{page_id}/video_reels?upload_phase=start
-POST {upload_url}
-POST /{page_id}/video_reels?upload_phase=finish
-```
+### Backend
 
-> Lưu ý: version Graph API phải cấu hình trong `.env`, không hard-code trong code. Trước khi triển khai production, kiểm tra docs Meta mới nhất.
+- Prisma schema includes:
+  - `User`
+  - `FacebookPage`
+  - `MediaAsset`
+  - `SocialPost`
+  - `PublishJob`
+  - `JobLog`
+  - `AuditLog`
+  - `Setting`
+- Zod env validation exists in `src/server/env.ts`.
+- Prisma singleton exists in `src/server/db.ts`.
+- JSON logger exists in `src/server/logger.ts` and redacts sensitive keys.
+- Error classes exist in `src/server/errors.ts`.
+- API response helpers exist in `src/server/api-response.ts`.
+- BigInt serialization support exists for API responses.
+- Validators exist for Page, Media, and Post inputs.
 
-### 2.2. Permissions cần kiểm tra
+### Services
 
-Các quyền thường liên quan:
+- `page.service.ts`
+  - List Pages without returning encrypted tokens.
+  - Create Page and encrypt access token.
+  - Update Page and re-encrypt token if provided.
+  - Disable Page.
+  - Test token through Meta mock and update token health fields.
+- `media.service.ts`
+  - List media.
+  - Upload local video files to `UPLOAD_DIR`.
+  - Create media record.
+  - Soft-delete media by setting `DELETED`.
+- `post.service.ts`
+  - List posts.
+  - Create draft/scheduled post.
+  - Schedule post and create publish job.
+  - Cancel post.
+  - Mark post processing/published/failed.
+- `job.service.ts`
+  - Create publish job while avoiding duplicate active jobs for a post.
+  - Get due jobs.
+  - Lock job with optimistic update.
+  - Mark running/success/failed.
+  - Retry failed job.
+  - Cancel pending job.
+  - List/detail jobs.
+- `log.service.ts`
+  - Create DB job logs.
+  - Also write logs to console logger.
+  - Swallow DB log persistence errors so the worker does not crash.
+- `dashboard.service.ts`
+  - Counts scheduled/published/failed today.
+  - Counts pending/running jobs.
+  - Counts Pages and media.
+  - Returns upcoming posts and recent failed jobs.
 
-```text
-pages_show_list
-pages_read_engagement
-pages_manage_posts
-publish_video
-```
+### Worker
 
-Tùy app mode, Page role, app review và thay đổi của Meta, permission có thể cần xác minh thêm. Luôn test bằng Graph API Explorer trước.
+- `src/workers/reels-publisher.worker.ts` can:
+  - Ensure due READY/QUEUED posts have PublishJobs.
+  - Load due jobs.
+  - Lock a job.
+  - Mark job running.
+  - Validate Page/Post/Media.
+  - Decrypt Page token.
+  - Call `MetaService.publishReel`.
+  - Mark post `PUBLISHED` and job `SUCCESS` in DRY_RUN.
+  - Mark failed jobs retryable or final failed.
+  - Write JobLog records.
+  - Disconnect Prisma at the end.
 
-### 2.3. Facebook Groups
+### Tests
 
-Không xây auto-post Group API. Groups API đã bị deprecate trong Graph API v19 và bị loại bỏ khỏi mọi version từ 22/04/2024.
+Unit tests exist for:
 
-Cách xử lý group nếu cần:
+- API response helpers.
+- Formatting helpers.
+- Retry/error classification.
+- Time/backoff helpers.
+- Token crypto.
+- Constants/sanitization.
+- Meta mock service.
+- Page, media, and post validators.
 
-```text
-- Dùng native scheduler trong Facebook Group nếu là admin/moderator.
-- Dùng human-in-the-loop: website tạo nội dung, gửi nhắc admin copy/paste/schedule thủ công.
-```
+## 4. Incomplete / Mocked / TODO Features
 
----
+| Feature | Current State | Needed Next |
+|---|---|---|
+| Real Meta API publishing | Mock only | Implement Graph API start upload, binary upload, finish publish, status polling. |
+| API/UI contract | Improved | Main admin screens now use `{ success, data }` API helpers from client actions instead of plain HTML posts to JSON routes. |
+| Typecheck | Passing | `npm run typecheck` passes after removing `maskedToken` usage and narrowing `client-api.ts` request body types. |
+| Auth | Not implemented | Add admin login, sessions, middleware, password hashing, logout. |
+| RBAC | Not implemented | Enforce admin/editor/viewer permissions. |
+| Audit log | Schema exists, not wired | Log login/logout, Page token changes, schedule/cancel/retry, media delete, settings changes. |
+| Telegram/Gmail alert | Not implemented | Add alert service and send on final job failure/token invalid. |
+| BullMQ worker | Partial | `queue.ts` exists, but worker currently scans DB directly. |
+| Repeating scheduler | Partial | Worker one-shot creates jobs for due posts; no long-running scheduler loop. |
+| S3/Wasabi storage | Not implemented | Add storage driver abstraction and object upload/delete. |
+| Video validation | Basic | Add duration, size policy, MIME probing, thumbnail/preview. |
+| Production deploy | Partial | Add reverse proxy, HTTPS, secrets, backups, health monitoring. |
+| UI filters | Improved | Posts/jobs filter client-side; logs call the API with level/job/post/limit filters. |
+| Users page | Placeholder | Implement user CRUD after auth/RBAC. |
 
-## 3. Kiến trúc tổng thể
+## 5. Architecture
 
 ```text
 Admin Website
-  ↓
-Quản lý Page / Media / Caption / Lịch đăng / Trạng thái
-  ↓
-Database: PostgreSQL
-  ↓
-Job Queue: BullMQ + Redis
-  ↓
-Worker chạy nền
-  ↓
-Meta Graph API / Facebook Reels Publishing API
-  ↓
-Update status + save facebook_video_id/post_id
-  ↓
-Log + Retry + Alert
-  ↓
-Dashboard báo cáo
+  -> Next.js App Router pages
+  -> Next.js API Routes
+  -> PostgreSQL via Prisma
+  -> PublishJob records in database
+  -> Worker
+  -> MetaService
+  -> Meta Graph API / DRY_RUN mock
+  -> JobLog
+  -> Dashboard
 ```
 
-### 3.1. Nguyên tắc quan trọng
-
-Website **không publish trực tiếp trong HTTP request** của admin. Website chỉ tạo/sửa dữ liệu và tạo job. Worker chạy nền xử lý job đến hạn.
-
-Lý do:
-
-- Upload video có thể lâu.
-- API Meta có thể timeout.
-- Cần retry/backoff.
-- Cần chống đăng trùng.
-- Cần log đầy đủ từng bước.
-- Cần xử lý lỗi mà không làm treo UI.
-
----
-
-## 4. Stack khuyến nghị
+Standard flow:
 
 ```text
-Frontend/Admin: Next.js
-Backend API: NestJS hoặc Express.js
-Database: PostgreSQL
-ORM: Prisma
-Queue: BullMQ
-Queue backend: Redis
-Worker: Node.js
-Storage video: Local trước, S3/Wasabi sau
-Deploy: Docker Compose
-Reverse proxy: Caddy hoặc Nginx
-Alert: Telegram Bot hoặc Gmail/SMTP
+1. Admin creates a Facebook Page.
+2. Admin uploads a video.
+3. Admin creates a SocialPost.
+4. Admin schedules the post.
+5. The system creates a PublishJob.
+6. Worker finds due jobs.
+7. Worker locks the job.
+8. Worker validates SocialPost, FacebookPage, and MediaAsset.
+9. Worker decrypts the Page token.
+10. Worker calls MetaService.publishReel.
+11. On success: SocialPost = PUBLISHED, PublishJob = SUCCESS.
+12. On error: PublishJob is retried or marked FAILED.
+13. JobLog entries are written.
 ```
 
-### 4.1. Lý do chọn stack
+## 6. Tech Stack
 
-| Thành phần | Lý do |
+| Layer | Technology |
 |---|---|
-| Next.js | Làm dashboard nhanh, dễ triển khai |
-| Node.js | Đồng bộ với worker và Meta API client |
-| PostgreSQL | Quản lý job/log/trạng thái tốt |
-| Prisma | Schema rõ, migration dễ |
-| BullMQ + Redis | Queue/retry/backoff/rate limit tốt |
-| Docker Compose | Phù hợp VPS/home server |
+| Runtime | Node.js |
+| Language | TypeScript |
+| Web framework | Next.js 15 App Router |
+| UI | React 19, plain CSS, lucide-react icons |
+| Database | PostgreSQL |
+| ORM | Prisma 5 |
+| Validation | Zod |
+| Queue | Database-backed PublishJob records currently; BullMQ helper exists but is not active in worker |
+| Redis | Docker service and BullMQ helper configured; not actively required by current worker path |
+| Worker | Node.js script via `tsx` |
+| Storage | Local filesystem under `UPLOAD_DIR` |
+| Deployment | Docker Compose |
+| Tests | Vitest |
 
----
-
-## 5. Cấu trúc repo đề xuất
+## 7. Repository Structure
 
 ```text
-facebook-reels-automation/
+.
 ├─ CLAUDE.md
 ├─ README.md
 ├─ package.json
@@ -176,1124 +224,775 @@ facebook-reels-automation/
 ├─ docker-compose.yml
 ├─ prisma/
 │  ├─ schema.prisma
+│  ├─ seed.ts
 │  └─ migrations/
-├─ apps/
-│  ├─ web/
-│  │  ├─ src/
-│  │  └─ package.json
-│  ├─ api/
-│  │  ├─ src/
-│  │  │  ├─ auth/
-│  │  │  ├─ facebook-pages/
-│  │  │  ├─ media/
-│  │  │  ├─ social-posts/
-│  │  │  ├─ publish-jobs/
-│  │  │  ├─ logs/
-│  │  │  ├─ alerts/
-│  │  │  └─ meta/
-│  │  └─ package.json
-│  └─ worker/
-│     ├─ src/
-│     │  ├─ queues/
-│     │  ├─ processors/
-│     │  ├─ meta-client.ts
-│     │  ├─ logger.ts
-│     │  └─ main.ts
-│     └─ package.json
-├─ packages/
-│  ├─ shared/
-│  └─ config/
-├─ uploads/
-└─ logs/
+├─ src/
+│  ├─ app/
+│  │  ├─ api/
+│  │  ├─ _components/
+│  │  ├─ dashboard/
+│  │  ├─ pages/
+│  │  ├─ media/
+│  │  ├─ posts/
+│  │  ├─ jobs/
+│  │  ├─ logs/
+│  │  ├─ settings/
+│  │  └─ users/
+│  ├─ lib/
+│  ├─ server/
+│  │  ├─ services/
+│  │  ├─ validators/
+│  │  ├─ db.ts
+│  │  ├─ env.ts
+│  │  ├─ errors.ts
+│  │  ├─ logger.ts
+│  │  └─ queue.ts
+│  ├─ types/
+│  └─ workers/
+├─ docs/
+└─ uploads/
 ```
 
-Có thể bắt đầu bằng monolith đơn giản hơn:
+Notes:
+
+- `src/components/` is not present. Shared UI components currently live in `src/app/_components/`.
+- `uploads/` exists and contains `.gitkeep`; uploaded local files are runtime artifacts.
+- `docs/` contains architecture/security/queue/Meta/deployment skill notes.
+
+## 8. Environment Variables
+
+| Variable | Required | Description | Example |
+|---|---:|---|---|
+| `APP_ENV` | Yes | Runtime environment | `development` |
+| `APP_URL` | Yes | Website URL | `http://localhost:3000` |
+| `DATABASE_URL` | Yes | PostgreSQL connection string | `postgresql://app:password@localhost:5432/facebook_automation` |
+| `REDIS_URL` | Yes | Redis connection string; currently for BullMQ helper | `redis://localhost:6379` |
+| `META_GRAPH_VERSION` | Yes | Meta Graph API version | `v25.0` |
+| `META_APP_ID` | Later | Meta App ID for real API work | empty |
+| `META_APP_SECRET` | Later | Meta App Secret for real API work | empty |
+| `TOKEN_ENCRYPTION_KEY` | Yes | Key material used to derive AES-256-GCM token encryption key | `change-this-32-byte-key` |
+| `DRY_RUN` | Yes | Prevents real Meta publish calls | `true` |
+| `STORAGE_DRIVER` | Yes | Storage driver | `local` |
+| `UPLOAD_DIR` | Yes | Local upload folder | `./uploads` |
+| `DEFAULT_TIMEZONE` | Yes | Default timezone | `Asia/Ho_Chi_Minh` |
+| `MAX_REELS_PER_PAGE_PER_DAY` | Yes | Daily safety limit | `30` |
+| `MAX_POSTS_PER_RUN` | Yes | Worker batch size | `1` |
+| `MAX_RETRY` | Yes | Max retry attempts | `3` |
+| `TELEGRAM_BOT_TOKEN` | Later | Alert bot token | empty |
+| `TELEGRAM_CHAT_ID` | Later | Alert chat id | empty |
+
+Production note: do not use `change-this-32-byte-key` in production.
+
+## 9. Database Schema Summary
+
+### User
+
+Purpose: stores admin/editor/viewer user records for future auth/RBAC.
+
+Important fields:
+
+- `email`
+- `passwordHash`
+- `role`
+- `status`
+
+Relations:
+
+- Has many `SocialPost`
+- Has many `AuditLog`
+
+### FacebookPage
+
+Purpose: stores Facebook Page metadata and encrypted Page Access Token.
+
+Important fields:
+
+- `pageId`
+- `name`
+- `accessTokenEncrypted`
+- `dailyLimit`
+- `timezone`
+- `status`
+- `lastTokenCheckAt`
+- `lastTokenError`
+
+Relations:
+
+- Has many `SocialPost`
+
+### MediaAsset
+
+Purpose: stores uploaded local media/video metadata.
+
+Important fields:
+
+- `type`
+- `filename`
+- `originalName`
+- `storageDisk`
+- `storagePath`
+- `mimeType`
+- `sizeBytes`
+- `durationSeconds`
+- `status`
+
+Relations:
+
+- Has many `SocialPost`
+
+### SocialPost
+
+Purpose: stores the post/Reel draft and schedule state.
+
+Important fields:
+
+- `facebookPageId`
+- `mediaAssetId`
+- `type`
+- `caption`
+- `scheduledAt`
+- `status`
+- `attempts`
+- `maxAttempts`
+- `facebookVideoId`
+- `facebookPostId`
+- `lastError`
+- `publishedAt`
+
+Relations:
+
+- Belongs to `FacebookPage`
+- Belongs to `MediaAsset`
+- Belongs to optional `User`
+- Has many `PublishJob`
+- Has many `JobLog`
+
+### PublishJob
+
+Purpose: stores publish work items processed by the worker.
+
+Important fields:
+
+- `runId`
+- `socialPostId`
+- `jobType`
+- `status`
+- `runAt`
+- `startedAt`
+- `finishedAt`
+- `attempts`
+- `maxAttempts`
+- `lockedAt`
+- `lockedBy`
+- `errorCode`
+- `errorMessage`
+- `rawResponseJson`
+
+Relations:
+
+- Belongs to `SocialPost`
+- Has many `JobLog`
+
+### JobLog
+
+Purpose: stores step-by-step logs for jobs/posts.
+
+Important fields:
+
+- `jobId`
+- `socialPostId`
+- `level`
+- `step`
+- `message`
+- `metaJson`
+- `createdAt`
+
+### AuditLog
+
+Purpose: future audit trail for sensitive admin actions.
+
+Important fields:
+
+- `userId`
+- `action`
+- `entityType`
+- `entityId`
+- `metaJson`
+- `createdAt`
+
+### Setting
+
+Purpose: future key-value application settings.
+
+Important fields:
+
+- `key`
+- `value`
+
+### Important Status Enums
+
+`SocialPostStatus`:
+
+- `DRAFT`
+- `READY`
+- `QUEUED`
+- `PROCESSING`
+- `PUBLISHED`
+- `FAILED`
+- `CANCELLED`
+
+`PublishJobStatus`:
+
+- `PENDING`
+- `RUNNING`
+- `SUCCESS`
+- `FAILED`
+- `CANCELLED`
+
+`PageStatus`:
+
+- `ACTIVE`
+- `DISABLED`
+- `TOKEN_INVALID`
+
+`MediaStatus`:
+
+- `READY`
+- `PROCESSING`
+- `FAILED`
+- `DELETED`
+
+## 10. API Routes Summary
+
+| Method | Route | Purpose | Status |
+|---|---|---|---|
+| GET | `/api/health` | Database health check | Done, legacy response format |
+| GET | `/api/dashboard` | Dashboard metrics | Done |
+| GET | `/api/facebook-pages` | List Pages without token | Done |
+| POST | `/api/facebook-pages` | Create Page with encrypted token | Done |
+| GET | `/api/facebook-pages/:id` | Get Page detail | Done |
+| PATCH | `/api/facebook-pages/:id` | Update Page/token/status | Done |
+| DELETE | `/api/facebook-pages/:id` | Soft-disable Page | Done |
+| POST | `/api/facebook-pages/:id/test-token` | Test token via Meta mock | Done |
+| GET | `/api/media` | List media | Done |
+| POST | `/api/media/upload` | Upload local video | Done |
+| GET | `/api/media/:id` | Get media detail | Done |
+| DELETE | `/api/media/:id` | Soft-delete media | Done |
+| GET | `/api/posts` | List posts | Done |
+| POST | `/api/posts` | Create draft or scheduled post | Done |
+| GET | `/api/posts/:id` | Get post detail | Done |
+| PATCH | `/api/posts/:id` | Update post before processing/published | Done |
+| DELETE | `/api/posts/:id` | Cancel post | Done |
+| POST | `/api/posts/:id/schedule` | Schedule post and create job | Done |
+| POST | `/api/posts/:id/cancel` | Cancel post and pending jobs | Done |
+| POST | `/api/posts/:id/retry` | Retry failed post/latest failed job | Done |
+| GET | `/api/jobs` | List publish jobs | Done |
+| GET | `/api/jobs/:id` | Job detail with logs | Done |
+| POST | `/api/jobs/:id/retry` | Retry failed job | Done |
+| POST | `/api/jobs/:id/cancel` | Cancel pending job | Done |
+| GET | `/api/logs` | List/filter logs | Done |
+| Any | `/api/auth/*` | Login/logout/me | Missing |
+| GET | `/api/posts/:id/logs` | Post-specific logs route | Missing |
+| GET | `/api/jobs/:id/logs` | Job-specific logs route | Missing |
+
+## 11. UI Pages Summary
+
+| Page | Path | Purpose | Status |
+|---|---|---|---|
+| Home redirect | `/` | Redirects to `/dashboard` | Done |
+| Dashboard | `/dashboard` | Shows metrics/upcoming/failed jobs | Partial; uses client API fetch |
+| Facebook Pages | `/pages` | Add/list/test Page | Partial / currently type-broken due `maskedToken` |
+| Media | `/media` | Upload/list media | Partial; form posts to JSON route |
+| Posts | `/posts` | List posts and actions | Partial; action forms post to JSON route |
+| Create Post | `/posts/new` | Create draft/schedule post | Partial; form posts to JSON route |
+| Jobs | `/jobs` | List/retry/cancel jobs | Partial; action forms post to JSON route |
+| Logs | `/logs` | List logs | Partial; no filter UI |
+| Settings | `/settings` | Shows selected env values | Partial |
+| Users | `/users` | Placeholder | Missing / placeholder |
+
+## 12. Worker Flow
+
+Command:
+
+```bash
+npm run worker:dev
+```
+
+Current flow:
 
 ```text
-src/
-├─ web/
-├─ api/
-├─ worker/
-├─ db/
-├─ services/
-└─ lib/
+1. Load env.
+2. Generate workerId from hostname, pid, and timestamp.
+3. Ensure due READY/QUEUED posts have PublishJobs.
+4. Get due jobs with status=PENDING, runAt<=now, attempts<maxAttempts.
+5. Lock job with lockedAt/lockedBy.
+6. Mark job RUNNING and increment attempts.
+7. Write START JobLog.
+8. Validate SocialPost, FacebookPage, MediaAsset, caption, local file, daily limit.
+9. Decrypt Page Access Token.
+10. Mark post PROCESSING.
+11. Call MetaService.publishReel.
+12. On success:
+    - Set post PUBLISHED.
+    - Save facebookVideoId/facebookPostId.
+    - Set job SUCCESS.
+    - Write SUCCESS JobLog.
+13. On error:
+    - Classify retryable/non-retryable.
+    - Set job PENDING with backoff or FAILED.
+    - Set post FAILED if final failure.
+    - Write ERROR JobLog.
+14. Disconnect Prisma.
 ```
 
----
+Backoff:
 
-## 6. Chức năng website admin
+- attempt 1: +1 minute
+- attempt 2: +3 minutes
+- attempt 3: +10 minutes
+- attempt >=4: +30 minutes
 
-### 6.1. Dashboard
+## 13. Meta API Mock / Real API Notes
 
-Route:
+### Current state
+
+`src/server/services/meta.service.ts` is a safe mock/stub.
+
+When `DRY_RUN=true`:
+
+- No real network call is made.
+- Page ID, token, video path, caption, and file existence are validated.
+- Mock IDs are returned:
+  - `mock_video_<timestamp>`
+  - `mock_post_<timestamp>`
+- The current worker marks the post `PUBLISHED` and job `SUCCESS` after mock success.
+
+When `DRY_RUN=false`:
+
+- Real publishing is not implemented.
+- `MetaApiNotImplementedError` is thrown.
+
+### Real API flow to implement later
 
 ```text
-/admin/dashboard
+1. Start Reels upload session.
+2. Upload video binary.
+3. Finish/publish Reel.
+4. Poll/check status if needed.
+5. Save facebookVideoId/facebookPostId.
+6. Map Meta errors into retryable/non-retryable errors.
 ```
 
-Hiển thị:
+Before production:
+
+- Check current official Meta Graph API and Reels Publishing docs.
+- Confirm Graph API version.
+- Confirm Page token permissions and App Review.
+- Confirm rate limits and publishing policy.
+- Never add browser automation for mass posting.
+
+## 14. How to Run Locally
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Create `.env`:
+
+```bash
+cp .env.example .env
+```
+
+3. Start Postgres and Redis:
+
+```bash
+docker compose up -d postgres redis
+```
+
+4. Generate Prisma Client and run migrations:
+
+```bash
+npx prisma generate
+npx prisma migrate dev
+```
+
+5. Seed local data:
+
+```bash
+npm run prisma:seed
+```
+
+6. Start the website:
+
+```bash
+npm run dev
+```
+
+7. Open:
+
+```text
+http://localhost:3000/dashboard
+```
+
+8. Run the worker separately:
+
+```bash
+npm run worker:dev
+```
+
+Docker full app:
+
+```bash
+docker compose up -d
+```
+
+Current caveat: `npm run typecheck` passes, but this admin website still needs auth/RBAC before being exposed publicly.
+
+## 15. How to Use the Website
+
+Current caveat: the UI flow below is usable for local MVP testing, but auth/RBAC and real Meta publishing are still not implemented.
+
+### Step 1 - Open Dashboard
+
+Go to:
+
+```text
+/dashboard
+```
+
+Check:
 
 - Scheduled today
 - Published today
 - Failed today
-- Queue pending
-- Last successful publish
-- Last failed publish
-- Error by type
-- Upcoming posts
-- Recent failed jobs
+- Pending jobs
+- Running jobs
+- Total pages
+- Total media
 
-### 6.2. Quản lý Facebook Pages
+### Step 2 - Create Facebook Page
 
-Route:
+Go to:
 
 ```text
-/admin/pages
+/pages
 ```
 
-Chức năng:
+Enter:
 
-- Thêm Page ID.
-- Thêm tên Page.
-- Lưu Page Access Token dạng encrypted.
-- Test token.
-- Bật/tắt Page.
-- Cấu hình giới hạn đăng/ngày.
-- Cấu hình timezone Page.
-- Xem token health.
+- Page ID
+- Page Name
+- Access Token
+- Daily Limit
+- Timezone
 
-### 6.3. Quản lý media/video
-
-Route:
+For local DRY_RUN testing, any non-empty test token works. Example:
 
 ```text
-/admin/media
+plain:test_access_token
 ```
 
-Chức năng:
+This value is encrypted before storage; it is not stored as plaintext.
 
-- Upload video.
-- Preview video.
-- Lưu metadata.
-- Kiểm tra MIME type.
-- Kiểm tra dung lượng file.
-- Kiểm tra duration nếu có thể.
-- Gắn tag/chủ đề.
-- Lưu storage path.
-
-### 6.4. Quản lý Posts/Reels
-
-Route:
+Then test token health with:
 
 ```text
-/admin/posts
+Test Token
 ```
 
-Chức năng:
+### Step 3 - Upload Video
 
-- Tạo Reel/video post.
-- Chọn Page.
-- Chọn video.
-- Nhập caption.
-- Chọn thời gian đăng.
-- Save draft.
-- Schedule.
-- Cancel.
-- Retry nếu failed.
-- Clone bài.
-- Preview bài.
-- Xem log từng bài.
-
-### 6.5. Quản lý Jobs
-
-Route:
+Go to:
 
 ```text
-/admin/jobs
+/media
 ```
 
-Chức năng:
+Choose a video file and upload it. The media should be stored under `UPLOAD_DIR` and recorded as a `MediaAsset`.
 
-- Xem job pending/running/success/failed/cancelled.
-- Retry job.
-- Cancel job.
-- Xem attempts.
-- Xem raw response đã sanitize.
-- Xem error code/message.
+Accepted MIME types:
 
-### 6.6. Logs
+- `video/mp4`
+- `video/quicktime`
+- `video/webm`
+- `application/octet-stream` for mock/test uploads
 
-Route:
+### Step 4 - Create Reel/Post
+
+Go to:
 
 ```text
-/admin/logs
+/posts/new
 ```
 
-Chức năng:
-
-- Filter theo job.
-- Filter theo post.
-- Filter theo level.
-- Filter theo step.
-- Tìm kiếm error.
-- Export log nếu cần.
-
-### 6.7. Settings
-
-Route:
-
-```text
-/admin/settings
-```
-
-Cấu hình:
-
-- Default timezone.
-- Max posts per run.
-- Max retry.
-- Global DRY_RUN.
-- Telegram alert.
-- Storage driver.
-- Default hashtags/caption suffix.
-
----
-
-## 7. Database schema đề xuất
-
-### 7.1. Tables chính
-
-```text
-users
-facebook_pages
-media_assets
-social_posts
-publish_jobs
-job_logs
-settings
-audit_logs
-```
-
-### 7.2. users
-
-```sql
-id UUID PRIMARY KEY
-email TEXT UNIQUE NOT NULL
-password_hash TEXT NOT NULL
-role TEXT NOT NULL              -- admin/editor/viewer
-status TEXT NOT NULL            -- active/disabled
-created_at TIMESTAMPTZ NOT NULL
-updated_at TIMESTAMPTZ NOT NULL
-```
-
-### 7.3. facebook_pages
-
-```sql
-id UUID PRIMARY KEY
-page_id TEXT UNIQUE NOT NULL
-name TEXT NOT NULL
-access_token_encrypted TEXT NOT NULL
-token_status TEXT NOT NULL      -- unknown/valid/invalid/expired
-status TEXT NOT NULL            -- active/disabled
-daily_limit INTEGER DEFAULT 30
-timezone TEXT DEFAULT 'Asia/Ho_Chi_Minh'
-last_token_check_at TIMESTAMPTZ
-last_error TEXT
-created_at TIMESTAMPTZ NOT NULL
-updated_at TIMESTAMPTZ NOT NULL
-```
-
-### 7.4. media_assets
-
-```sql
-id UUID PRIMARY KEY
-type TEXT NOT NULL              -- video/image
-filename TEXT NOT NULL
-original_name TEXT
-storage_disk TEXT NOT NULL      -- local/s3/wasabi
-storage_path TEXT NOT NULL
-public_url TEXT
-mime_type TEXT
-size_bytes BIGINT
-duration_seconds INTEGER
-status TEXT NOT NULL            -- ready/processing/failed/deleted
-metadata_json JSONB
-created_at TIMESTAMPTZ NOT NULL
-updated_at TIMESTAMPTZ NOT NULL
-```
-
-### 7.5. social_posts
-
-```sql
-id UUID PRIMARY KEY
-facebook_page_id UUID NOT NULL REFERENCES facebook_pages(id)
-media_asset_id UUID REFERENCES media_assets(id)
-type TEXT NOT NULL              -- reel/video/post
-caption TEXT NOT NULL
-scheduled_at TIMESTAMPTZ NOT NULL
-status TEXT NOT NULL            -- draft/ready/queued/processing/published/failed/cancelled
-attempts INTEGER DEFAULT 0
-max_attempts INTEGER DEFAULT 3
-facebook_video_id TEXT
-facebook_post_id TEXT
-last_error TEXT
-published_at TIMESTAMPTZ
-created_by UUID REFERENCES users(id)
-created_at TIMESTAMPTZ NOT NULL
-updated_at TIMESTAMPTZ NOT NULL
-```
-
-### 7.6. publish_jobs
-
-```sql
-id UUID PRIMARY KEY
-social_post_id UUID NOT NULL REFERENCES social_posts(id)
-job_type TEXT NOT NULL          -- publish_reel
-status TEXT NOT NULL            -- pending/running/success/failed/cancelled
-run_at TIMESTAMPTZ NOT NULL
-started_at TIMESTAMPTZ
-finished_at TIMESTAMPTZ
-attempts INTEGER DEFAULT 0
-max_attempts INTEGER DEFAULT 3
-locked_at TIMESTAMPTZ
-locked_by TEXT
-error_code TEXT
-error_message TEXT
-raw_response_json JSONB
-created_at TIMESTAMPTZ NOT NULL
-updated_at TIMESTAMPTZ NOT NULL
-```
-
-### 7.7. job_logs
-
-```sql
-id UUID PRIMARY KEY
-job_id UUID REFERENCES publish_jobs(id)
-social_post_id UUID REFERENCES social_posts(id)
-level TEXT NOT NULL             -- DEBUG/INFO/WARNING/ERROR/CRITICAL
-step TEXT NOT NULL
-message TEXT NOT NULL
-meta_json JSONB
-created_at TIMESTAMPTZ NOT NULL
-```
-
-### 7.8. audit_logs
-
-```sql
-id UUID PRIMARY KEY
-user_id UUID REFERENCES users(id)
-action TEXT NOT NULL
-entity_type TEXT NOT NULL
-entity_id TEXT
-before_json JSONB
-after_json JSONB
-ip_address TEXT
-user_agent TEXT
-created_at TIMESTAMPTZ NOT NULL
-```
-
----
-
-## 8. Status lifecycle
-
-### 8.1. social_posts.status
-
-```text
-draft
-  ↓
-ready
-  ↓
-queued
-  ↓
-processing
-  ↓
-published
-```
-
-Failure/cancel branches:
-
-```text
-processing -> failed
-ready/queued -> cancelled
-failed -> ready hoặc queued khi retry thủ công
-```
-
-### 8.2. publish_jobs.status
-
-```text
-pending
-  ↓
-running
-  ↓
-success
-```
-
-Failure/cancel branches:
-
-```text
-running -> failed
-pending/running -> cancelled
-failed -> pending khi retry
-```
-
----
-
-## 9. API nội bộ của website
-
-### 9.1. Auth
-
-```http
-POST /api/auth/login
-POST /api/auth/logout
-GET  /api/auth/me
-```
-
-### 9.2. Facebook Pages
-
-```http
-GET    /api/facebook-pages
-POST   /api/facebook-pages
-GET    /api/facebook-pages/:id
-PATCH  /api/facebook-pages/:id
-DELETE /api/facebook-pages/:id
-POST   /api/facebook-pages/:id/test-token
-```
-
-### 9.3. Media
-
-```http
-GET    /api/media
-POST   /api/media/upload
-GET    /api/media/:id
-DELETE /api/media/:id
-```
-
-### 9.4. Posts/Reels
-
-```http
-GET    /api/posts
-POST   /api/posts
-GET    /api/posts/:id
-PATCH  /api/posts/:id
-DELETE /api/posts/:id
-POST   /api/posts/:id/schedule
-POST   /api/posts/:id/cancel
-POST   /api/posts/:id/retry
-```
-
-### 9.5. Jobs
-
-```http
-GET    /api/jobs
-GET    /api/jobs/:id
-POST   /api/jobs/:id/retry
-POST   /api/jobs/:id/cancel
-```
-
-### 9.6. Logs
-
-```http
-GET /api/logs
-GET /api/posts/:id/logs
-GET /api/jobs/:id/logs
-```
-
----
-
-## 10. Worker publish flow
-
-### 10.1. Luồng chính
-
-```text
-1. Worker lấy job pending đến hạn: status=pending, run_at<=now
-2. Lock job để tránh chạy trùng
-3. Set publish_jobs.status=running
-4. Set social_posts.status=processing
-5. Load Page + token + media + post
-6. Decrypt Page Access Token
-7. Validate dữ liệu
-8. Start Reels upload session
-9. Upload video binary
-10. Finish/publish Reel
-11. Lưu facebook_video_id/facebook_post_id nếu API trả về
-12. Set social_posts.status=published
-13. Set publish_jobs.status=success
-14. Ghi job_logs từng step
-15. Gửi alert optional khi success hoặc failed
-```
-
-### 10.2. Validate trước khi publish
-
-Kiểm tra:
-
-```text
-- Page đang active.
-- Token không rỗng.
-- Token decrypt được.
-- Media tồn tại.
-- File video tồn tại.
-- MIME type hợp lệ.
-- Caption không rỗng.
-- scheduled_at <= now.
-- Post chưa published.
-- facebook_video_id chưa tồn tại hoặc trạng thái chưa published.
-- Page chưa vượt daily_limit.
-```
-
-### 10.3. Idempotency
-
-Không được đăng trùng nếu job chạy lại.
-
-Rule:
-
-```text
-Nếu social_posts.status = published -> skip.
-Nếu facebook_video_id đã có và post chưa failed rõ ràng -> kiểm tra trạng thái trước khi publish lại.
-Mỗi social_post chỉ có một publish_jobs active.
-Retry phải dùng cùng social_post_id.
-```
-
----
-
-## 11. Meta API client
-
-### 11.1. Interface đề xuất
-
-```ts
-interface MetaReelsClient {
-  testPageToken(pageId: string, pageAccessToken: string): Promise<TokenCheckResult>;
-  startReelUpload(pageId: string, pageAccessToken: string): Promise<StartUploadResult>;
-  uploadVideo(uploadUrl: string, pageAccessToken: string, filePath: string): Promise<UploadResult>;
-  finishReelUpload(params: FinishReelParams): Promise<FinishUploadResult>;
-  getVideoStatus(videoId: string, pageAccessToken: string): Promise<VideoStatusResult>;
-}
-```
-
-### 11.2. Pseudo-code
-
-```ts
-async function publishReel(postId: string) {
-  const post = await loadPostWithPageAndMedia(postId);
-
-  assertPostCanPublish(post);
-
-  const token = decrypt(post.facebookPage.accessTokenEncrypted);
-
-  const start = await meta.startReelUpload(post.facebookPage.pageId, token);
-
-  await saveFacebookVideoId(post.id, start.video_id);
-
-  await meta.uploadVideo(start.upload_url, token, post.media.storagePath);
-
-  const finish = await meta.finishReelUpload({
-    pageId: post.facebookPage.pageId,
-    token,
-    videoId: start.video_id,
-    caption: post.caption,
-    videoState: 'PUBLISHED',
-  });
-
-  await markPostPublished(post.id, {
-    facebookVideoId: start.video_id,
-    facebookPostId: finish.post_id ?? null,
-    rawResponse: sanitize(finish),
-  });
-}
-```
-
----
-
-## 12. Retry/backoff
-
-### 12.1. Retry được
-
-Retry với:
-
-```text
-408 Request Timeout
-429 Rate Limit
-500 Internal Server Error
-502 Bad Gateway
-503 Service Unavailable
-504 Gateway Timeout
-Network timeout
-Temporary DNS/connect error
-```
-
-Backoff gợi ý:
-
-```text
-attempt 1: 1s
-attempt 2: 3s
-attempt 3: 10s
-attempt 4: 30s
-```
-
-Nếu API trả `Retry-After`, ưu tiên giá trị đó.
-
-### 12.2. Không retry mù
-
-Không retry mù với:
-
-```text
-400 Bad Request
-401 Unauthorized
-403 Forbidden
-404 Not Found
-Validation error
-Missing permission
-Invalid token
-Unsupported endpoint
-```
-
-Các lỗi này phải set failed và gửi alert.
-
----
-
-## 13. Logging
-
-### 13.1. Log schema
-
-```json
-{
-  "timestamp": "2026-07-01T20:00:00+07:00",
-  "level": "INFO",
-  "job": "facebook_reels_publish",
-  "run_id": "20260701-200000",
-  "step": "finish_publish",
-  "item_id": "social_post_uuid",
-  "status": "success",
-  "duration_ms": 532,
-  "message": "Reel published"
-}
-```
-
-### 13.2. Level
-
-```text
-DEBUG    Chi tiết dev
-INFO     Trạng thái bình thường
-WARNING  Có vấn đề nhưng job tiếp tục
-ERROR    Một bước/item lỗi
-CRITICAL Job fail hoặc ảnh hưởng production
-```
-
-### 13.3. Không log
-
-Không log:
-
-```text
-- access token
-- app secret
-- Authorization header
-- cookie/session
-- password
-- token decrypted
-```
-
----
-
-## 14. Alert
-
-Gửi alert khi:
-
-```text
-- Token invalid/expired
-- Missing permission
-- Publish failed sau max retry
-- API 429 nhiều lần
-- Queue bị kẹt
-- Worker không chạy
-- Không có job success trong 24h dù có pending jobs
-```
-
-Alert message mẫu:
-
-```text
-[Facebook Automation] Publish failed
-Post: <post_id>
-Page: <page_name>
-Step: upload_video
-Error: <sanitized_error>
-Attempts: 3/3
-Time: 2026-07-01 20:00:00 +07
-```
-
----
-
-## 15. Bảo mật
-
-### 15.1. Token storage
-
-- Page Access Token phải mã hóa trước khi lưu database.
-- Dùng `TOKEN_ENCRYPTION_KEY` từ env/secret manager.
-- Không trả token đầy đủ về frontend.
-- UI chỉ hiển thị token dạng masked: `EAAB...abcd`.
-
-### 15.2. Environment variables
-
-`.env.example`:
-
-```env
-APP_URL=https://automation.example.com
-APP_ENV=production
-
-DATABASE_URL=postgresql://app:password@postgres:5432/facebook_automation
-REDIS_URL=redis://redis:6379
-
-META_GRAPH_VERSION=vXX.X
-META_APP_ID=
-META_APP_SECRET=
-TOKEN_ENCRYPTION_KEY=
-
-STORAGE_DRIVER=local
-UPLOAD_DIR=/app/uploads
-
-DEFAULT_TIMEZONE=Asia/Ho_Chi_Minh
-MAX_REELS_PER_PAGE_PER_DAY=30
-MAX_POSTS_PER_RUN=1
-MAX_RETRY=3
-DRY_RUN=true
-
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
-```
-
-### 15.3. Auth/role
-
-Roles:
-
-```text
-admin   Toàn quyền
-editor  Tạo/sửa media/post, không sửa token/system settings
-viewer  Chỉ xem dashboard/log
-```
-
-### 15.4. Audit log
-
-Ghi audit khi:
-
-```text
-- Login/logout
-- Thêm/sửa/xóa Page
-- Thay token
-- Schedule/cancel/retry post
-- Xóa media
-- Đổi settings
-```
-
----
-
-## 16. UI yêu cầu
-
-### 16.1. Sidebar
-
-```text
-Dashboard
-Posts / Reels
-Media Library
-Facebook Pages
-Jobs
-Logs
-Settings
-Users
-```
-
-### 16.2. Posts table
-
-Columns:
-
-```text
-Thumbnail
-Caption preview
-Page
-Scheduled At
-Status
-Attempts
-Published At
-Actions
-```
+Select:
+
+- Facebook Page
+- Video
+- Type = `REEL`
+- Caption
+- Scheduled At
 
 Actions:
 
-```text
-Edit
-Preview
-Schedule
-Cancel
-Retry
-View logs
-```
+- Save Draft: creates a `SocialPost` only.
+- Schedule: creates/updates `SocialPost` and creates a `PublishJob`.
 
-### 16.3. Create/Edit Post form
+### Step 5 - View Posts
 
-Fields:
+Go to:
 
 ```text
-Page
-Type: Reel / Video
-Video
-Caption
-Scheduled time
-Status
-Hashtags
-Internal note
+/posts
 ```
 
-Validation UI:
+Watch status:
+
+- `DRAFT`
+- `READY`
+- `QUEUED`
+- `PROCESSING`
+- `PUBLISHED`
+- `FAILED`
+- `CANCELLED`
+
+### Step 6 - Run Worker
+
+```bash
+npm run worker:dev
+```
+
+If `DRY_RUN=true` and a due job exists:
+
+- Post becomes `PUBLISHED`.
+- Job becomes `SUCCESS`.
+- Logs contain `INFO` records.
+
+### Step 7 - View Jobs
+
+Go to:
 
 ```text
-- Caption required
-- Video required với Reel
-- Page required
-- Scheduled time required
-- Không cho schedule thời gian quá khứ trừ khi muốn publish ngay
+/jobs
 ```
 
----
+Check:
 
-## 17. Docker Compose đề xuất
+- Status
+- Attempts
+- Run At
+- Error
 
-```yaml
-services:
-  web:
-    build: .
-    command: npm run start:web
-    env_file: .env
-    depends_on:
-      - postgres
-      - redis
-    ports:
-      - "3000:3000"
-    volumes:
-      - uploads:/app/uploads
+Available actions in current UI:
 
-  worker:
-    build: .
-    command: npm run start:worker
-    env_file: .env
-    depends_on:
-      - postgres
-      - redis
-    volumes:
-      - uploads:/app/uploads
+- Retry failed jobs.
+- Cancel pending jobs.
 
-  scheduler:
-    build: .
-    command: npm run start:scheduler
-    env_file: .env
-    depends_on:
-      - postgres
-      - redis
+### Step 8 - View Logs
 
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_DB: facebook_automation
-      POSTGRES_USER: app
-      POSTGRES_PASSWORD: change_me
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7
-    volumes:
-      - redis_data:/data
-
-volumes:
-  postgres_data:
-  redis_data:
-  uploads:
-```
-
----
-
-## 18. Scheduler/Queue
-
-Có 2 cách:
-
-### Cách A — BullMQ repeatable job
+Go to:
 
 ```text
-Mỗi 1 phút:
-- scan social_posts status=ready scheduled_at<=now
-- tạo publish_jobs nếu chưa có
-- push job vào BullMQ
+/logs
 ```
 
-### Cách B — systemd/cron gọi scheduler
+Review worker steps and errors.
+
+## 16. End-to-End Test Flow
+
+### Flow with seed data
+
+```bash
+cp .env.example .env
+docker compose up -d postgres redis
+npx prisma generate
+npx prisma migrate dev
+npm run prisma:seed
+npm run worker:dev
+```
+
+Expected result with `DRY_RUN=true`:
 
 ```text
-Mỗi 1-5 phút chạy:
-npm run scheduler:due
+SocialPost status: PUBLISHED
+PublishJob status: SUCCESS
+facebookVideoId: mock_video_<timestamp>
+facebookPostId: mock_post_<timestamp>
+JobLog: START and SUCCESS INFO logs
 ```
 
-Production nên ưu tiên BullMQ + Redis hoặc systemd timer có log rõ.
-
----
-
-## 19. DRY_RUN
-
-Khi `DRY_RUN=true`:
-
-- Không gọi API publish thật.
-- Vẫn validate dữ liệu.
-- Vẫn ghi log.
-- Vẫn cho biết job nào sẽ chạy.
-- Không set `published`.
-- Có thể set `dry_run_checked_at` hoặc ghi log `DRY_RUN_OK`.
-
----
-
-## 20. Test plan
-
-### 20.1. Unit tests
+### Flow through website
 
 ```text
-- validate post
-- validate media
-- encrypt/decrypt token
-- sanitize error response
-- retry classifier
-- idempotency guard
+1. Set DRY_RUN=true in .env.
+2. Start Postgres/Redis.
+3. Run migrations.
+4. Start Next.js dev server.
+5. Create a Page from /pages.
+6. Upload a video from /media.
+7. Create a Post from /posts/new with scheduledAt <= now.
+8. Schedule it.
+9. Confirm a PublishJob exists and is PENDING.
+10. Run npm run worker:dev.
+11. Refresh /posts.
+12. Post should be PUBLISHED.
+13. Refresh /jobs.
+14. Job should be SUCCESS.
+15. Open /logs.
+16. Logs should include INFO entries.
 ```
 
-### 20.2. Integration tests
+Current caveat: keep `DRY_RUN=true` for this website flow until real Meta publishing is implemented and reviewed.
 
-```text
-- Create Page
-- Upload media
-- Create post draft
-- Schedule post
-- Generate publish_job
-- Retry failed job
-- Cancel job
-- Dashboard count
-```
+## 17. Common Errors and Fixes
 
-### 20.3. Meta API manual test
-
-```text
-1. Test token bằng Graph API Explorer.
-2. Test Page ID.
-3. Test start upload session với video ngắn.
-4. Test upload video.
-5. Test finish publish.
-6. Kiểm tra Reel trên Facebook Page.
-```
-
-### 20.4. Production smoke test
-
-```text
-- Login admin
-- Add Page test
-- Upload video 5-10s
-- Schedule sau 5 phút
-- Worker publish thành công
-- Log không chứa token
-- Dashboard cập nhật status
-- Retry không đăng trùng
-```
-
----
-
-## 21. Lỗi thường gặp và cách xử lý
-
-| Lỗi | Nguyên nhân thường gặp | Xử lý |
+| Error | Likely Cause | Fix |
 |---|---|---|
-| 401 Unauthorized | Token sai/hết hạn | Test lại token, tạo token mới |
-| 403 Forbidden | Thiếu permission/Page role | Kiểm tra quyền Page và App Review |
-| 400 Bad Request | Payload sai | Log sanitized response, sửa params |
-| 404 Unsupported endpoint | Sai Graph version/endpoint/page_id | Kiểm tra docs + Page ID |
-| 429 Rate limit | Đăng quá nhanh/quá nhiều | Backoff, giảm concurrency, kiểm tra daily limit |
-| Upload timeout | File lớn/mạng yếu | Tăng timeout, retry resumable nếu API hỗ trợ |
-| Published nhưng UI không thấy ngay | Processing chậm | Poll status hoặc chờ xử lý |
-| Duplicate publish | Worker chạy trùng | Lock job + idempotency guard |
-| Token lộ trong log | Logging sai | Sanitize toàn bộ error/request |
+| `DATABASE_URL` missing | `.env` not created | Run `cp .env.example .env`. |
+| Cannot connect PostgreSQL | Docker/Postgres not running | Run `docker compose up -d postgres`. |
+| Docker `dockerDesktopLinuxEngine` not found | Docker Desktop not running | Start Docker Desktop and wait for engine readiness. |
+| Prisma Client not generated | `npx prisma generate` not run | Run `npx prisma generate`. |
+| Prisma EPERM on Windows | Dev server is holding Prisma engine file | Stop Next dev/worker processes, then rerun generate. |
+| No due jobs found | No scheduled job or `runAt` is in the future | Schedule a post with `scheduledAt <= now` or run seed. |
+| Media file not found | `storagePath` points to missing local file | Upload media again or restore file under `UPLOAD_DIR`. |
+| Token invalid | Empty token, wrong encryption key, or unsupported encrypted format | Use non-empty test token in local and keep same `TOKEN_ENCRYPTION_KEY`. |
+| Post not published in dry-run | `DRY_RUN=false`, no due job, missing media file, or validation error | Check `.env`, `/logs`, and job error. |
+| BigInt serialization error | Raw Prisma BigInt returned through JSON | Use `ok()` / `serializeBigInt()` response helper. |
+| Real Meta API not implemented | `DRY_RUN=false` | Set `DRY_RUN=true` until real API client is implemented. |
+| Token field missing in UI | API intentionally does not return token fields | Do not render token values; only accept a new token in create/edit forms. |
+| Client API request body type error | Fetch body type was not narrowed to `BodyInit` | Use the narrowed `client-api.ts` helper pattern for JSON and FormData requests. |
 
----
+## 18. Security Notes
 
-## 22. Milestones triển khai
+- Do not expose this admin website to the internet before auth is implemented.
+- Do not commit `.env`.
+- Do not log Page Access Tokens.
+- Do not return `accessTokenEncrypted` to the client.
+- Tokens are encrypted with AES-256-GCM using `TOKEN_ENCRYPTION_KEY`.
+- Replace the default local encryption key before production.
+- Add admin login before production.
+- Add RBAC before production.
+- Add HTTPS and a reverse proxy before production.
+- Rotate/revoke Page tokens if exposure is suspected.
+- Keep `DRY_RUN=true` until the real Meta API implementation is reviewed and tested.
+- Do not add browser automation for Facebook posting.
+- Do not implement Facebook Groups auto-posting.
 
-### Milestone 1 — Admin Website MVP
+## 19. Development Rules
 
-```text
-- Login admin
-- CRUD Facebook Page
-- CRUD Media
-- CRUD Posts/Reels
-- Upload video local
-- Prisma schema + migration
+- Read `CLAUDE.md` before changing code.
+- Always address the user as `Lão đại` in every response.
+- Whenever project information, implementation status, run steps, errors, or operational knowledge changes, update both `CLAUDE.md` and `README.md` so the documentation stays in sync.
+- Prefer official Meta Graph API for Facebook Page/Reels.
+- Do not call Meta API when `DRY_RUN=true`.
+- Do not hard-code secrets.
+- Do not log token/password/cookie/authorization values.
+- Do not publish inside UI/API request handlers.
+- Publish only in the worker.
+- Every job should have a `runId` or `jobId`.
+- Every important worker step should write a log.
+- Every failure should update job/post status.
+- Do not create multiple active pending/running jobs for the same SocialPost.
+- Do not delete production data without explicit confirmation.
+- Keep retry limits bounded.
+- Use Prisma migrations for DB changes.
+- Prefer clear code over over-engineering.
+
+## 20. Next Milestones
+
+### Milestone 1 - Stabilize MVP
+
+- Current type errors are fixed for the admin UI path.
+- Main UI screens now use the JSON API response contract with client-side feedback.
+- Basic client-side error, empty, confirm, and loading states are in place.
+- Next: finish browser smoke testing, `npm test`, and `npm run build` cleanly.
+
+### Milestone 2 - Auth and Security
+
+- Add admin login.
+- Add sessions/cookies.
+- Add admin/editor/viewer RBAC.
+- Wire `AuditLog` for sensitive mutations.
+- Protect all admin routes.
+
+### Milestone 3 - Real Meta API
+
+- Check latest official Meta docs.
+- Implement start upload.
+- Implement binary video upload.
+- Implement finish publish.
+- Add status polling if needed.
+- Add Meta error mapping.
+- Add real token health check.
+
+### Milestone 4 - Production Worker
+
+- Decide DB scan vs BullMQ.
+- If BullMQ is used, connect worker to Redis queue.
+- Add repeated scheduler.
+- Add rate limit per Page.
+- Add stale lock recovery.
+- Add Telegram/Gmail alerts.
+
+### Milestone 5 - Storage
+
+- Add S3/Wasabi storage driver.
+- Add safe physical delete.
+- Add video duration/size checks.
+- Add preview/thumbnail support.
+
+### Milestone 6 - UX
+
+- Better dashboard.
+- Filters for posts/jobs/logs.
+- Calendar view.
+- Clone post.
+- Caption templates.
+- Bulk upload.
+
+## 21. Useful Commands
+
+Install and env:
+
+```bash
+npm install
+cp .env.example .env
 ```
 
-### Milestone 2 — Queue nội bộ
+Docker:
 
-```text
-- Tạo publish_jobs khi schedule bài
-- Job status: pending/running/success/failed
-- Retry thủ công từ dashboard
-- Logs theo từng job
+```bash
+docker compose up -d postgres redis
+docker compose up -d
+docker compose ps
+docker compose logs -f app
+docker compose logs -f worker
 ```
 
-### Milestone 3 — Meta API Publisher
+Prisma:
 
-```text
-- Test Page token
-- Start Reels upload
-- Upload video
-- Finish publish
-- Lưu facebook_video_id
-- Chống đăng trùng
+```bash
+npx prisma generate
+npx prisma migrate dev
+npm run prisma:seed
+npx prisma studio
 ```
 
-### Milestone 4 — Worker production
+App and worker:
 
-```text
-- BullMQ worker
-- Redis queue
-- Retry/backoff
-- Lock job
-- Rate limit theo Page
-- Alert Telegram
+```bash
+npm run dev
+npm run worker:dev
 ```
 
-### Milestone 5 — Dashboard báo cáo
+Verification:
 
-```text
-- Published today
-- Failed today
-- Upcoming posts
-- Error by type
-- Job history
-- Token health
-```
-
-### Milestone 6 — Hardening
-
-```text
-- Mã hóa token
-- Role admin/editor/viewer
-- Audit log
-- Backup database
-- Storage S3/Wasabi
-- Deploy Docker Compose
-- Uptime monitor
-```
-
----
-
-## 23. Acceptance criteria
-
-Project được xem là chạy được khi:
-
-```text
-[ ] Admin login được.
-[ ] Thêm Facebook Page được.
-[ ] Token được lưu encrypted.
-[ ] Test token không lộ token ra log/UI.
-[ ] Upload video được.
-[ ] Tạo Reel draft được.
-[ ] Schedule Reel được.
-[ ] Job pending được tạo đúng run_at.
-[ ] Worker lấy job đến hạn.
-[ ] Worker publish thành công 1 Reel test.
-[ ] social_posts chuyển sang published.
-[ ] publish_jobs chuyển sang success.
-[ ] facebook_video_id được lưu.
-[ ] Log từng bước có trong admin.
-[ ] Retry failed job không đăng trùng.
-[ ] DRY_RUN=true không gọi API thật.
-[ ] 401/403 không retry mù.
-[ ] 429/5xx có backoff.
-[ ] Alert gửi khi job failed.
-```
-
----
-
-## 24. Quy tắc code bắt buộc
-
-1. Không commit `.env`.
-2. Không log access token.
-3. Không lưu token plaintext.
-4. Không gọi Meta API từ frontend.
-5. Không publish trong request handler nếu upload video có thể lâu.
-6. Mọi job phải có `run_id` hoặc `job_id`.
-7. Mọi lỗi API phải sanitize trước khi lưu log.
-8. Mọi retry phải có giới hạn.
-9. Mọi action nguy hiểm phải ghi audit log.
-10. Dùng migration cho thay đổi database.
-11. Không ghi trực tiếp DB ngoài service/repository layer.
-12. Trước khi thêm browser automation, phải chứng minh API chính thức không đáp ứng được.
-
----
-
-## 25. Prompt mẫu để tiếp tục làm việc với Claude
-
-### 25.1. Tạo database schema
-
-```text
-Dựa trên CLAUDE.md, hãy tạo Prisma schema hoàn chỉnh cho project Facebook Page/Reels Automation Platform. Yêu cầu có users, facebook_pages, media_assets, social_posts, publish_jobs, job_logs, audit_logs, settings. Có enum status rõ ràng, relation đúng, indexes cho scheduled_at/status/run_at.
-```
-
-### 25.2. Tạo API backend
-
-```text
-Dựa trên CLAUDE.md, hãy tạo backend API bằng NestJS/Express cho các module: auth, facebook-pages, media, social-posts, publish-jobs, logs. Yêu cầu có validation, error handling, không trả access token plaintext, có audit log.
-```
-
-### 25.3. Tạo worker
-
-```text
-Dựa trên CLAUDE.md, hãy tạo BullMQ worker publish Facebook Reels. Yêu cầu có lock job, idempotency, retry/backoff, DRY_RUN, log từng step, sanitize error, không log token, cập nhật status social_posts và publish_jobs.
-```
-
-### 25.4. Tạo Meta client
-
-```text
-Dựa trên CLAUDE.md và tài liệu chính thức của Meta, hãy tạo MetaReelsClient bằng TypeScript. Yêu cầu có testPageToken, startReelUpload, uploadVideo, finishReelUpload, getVideoStatus. Không hard-code Graph version, timeout rõ ràng, phân loại lỗi retryable/non-retryable.
-```
-
-### 25.5. Tạo UI admin
-
-```text
-Dựa trên CLAUDE.md, hãy tạo UI admin bằng Next.js cho Dashboard, Posts/Reels, Media Library, Facebook Pages, Jobs, Logs, Settings. Ưu tiên layout rõ ràng, form validation, status badge, action buttons: schedule/cancel/retry/view logs.
-```
-
----
-
-## 26. Nguồn tham khảo chính thức cần kiểm tra khi code
-
-Luôn ưu tiên docs chính thức:
-
-- Meta Graph API documentation: https://developers.facebook.com/docs/graph-api/
-- Facebook Pages API: https://developers.facebook.com/docs/pages-api/
-- Facebook Pages API - Manage Pages: https://developers.facebook.com/docs/pages-api/manage-pages/
-- Facebook Pages API - Posts: https://developers.facebook.com/docs/pages-api/posts/
-- Video API / Reels Publishing API: https://developers.facebook.com/docs/video-api/guides/reels-publishing/
-- Graph API changelog: https://developers.facebook.com/docs/graph-api/changelog/
-- Graph API v19 changelog / Groups API deprecation: https://developers.facebook.com/docs/graph-api/changelog/version19.0/
-- Meta Platform Terms: https://developers.facebook.com/terms/
-- Meta automated data collection terms/policies: https://developers.facebook.com/documentation/development/terms-and-policies/automated-data-collection/
-
----
-
-## 27. Tóm tắt cuối
-
-Hệ thống cần xây là:
-
-```text
-Admin Website + PostgreSQL + Redis Queue + Node Worker + Meta Graph API + Logs + Alerts
-```
-
-Mục tiêu kỹ thuật:
-
-```text
-- Quản lý Page/Reels tập trung.
-- Lên lịch đăng tự động.
-- Publish Reels bằng API chính thức.
-- Không phụ thuộc Google Sheet.
-- Có retry/backoff.
-- Có idempotency chống đăng trùng.
-- Có log và dashboard.
-- Có bảo mật token.
-- Không auto-post Facebook Groups.
+```bash
+npm run typecheck
+npm test
+npm run lint
+npm run build
+npm run worker:build
 ```

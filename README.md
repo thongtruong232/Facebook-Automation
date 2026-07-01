@@ -2,6 +2,11 @@
 
 Website noi bo de quan ly Facebook Pages, media, caption, lich dang, publish jobs, logs va worker publish Reels qua Meta Graph API. Skeleton hien tai uu tien an toan: `DRY_RUN=true`, token duoc ma hoa, Meta client dang la stub/mock va khong goi API that.
 
+## Quy tac lam viec
+
+- Luon goi nguoi dung la `Lão đại` khi tra loi.
+- Khi co thong tin moi ve project, trang thai trien khai, cach chay, loi thuong gap hoac quy trinh van hanh, cap nhat dong thoi `CLAUDE.md` va `README.md`.
+
 ## Stack
 
 - Node.js + TypeScript
@@ -11,6 +16,18 @@ Website noi bo de quan ly Facebook Pages, media, caption, lich dang, publish job
 - Worker Node.js rieng
 - Local filesystem storage
 - Docker Compose local
+
+## Trang thai UI hien tai
+
+- Admin shell da co sidebar, topbar, active navigation va DRY RUN badge.
+- `/dashboard` co metric cards, upcoming posts, failed jobs, refresh va action nhanh.
+- `/pages` tao/sua/test token/disable Page bang JSON API, khong hien token da luu.
+- `/media` upload video, preview file da chon, copy storage path va archive media.
+- `/posts` co filter status/page/caption, schedule/cancel/retry va link logs.
+- `/posts/new` co form tao draft/schedule, preview va checklist.
+- `/jobs` co filter, retry/cancel co confirm va link logs.
+- `/logs` co filter level/job/post/limit va xem meta da sanitize.
+- `npm run typecheck` dang pass sau khi sua UI/API contract.
 
 ## Chay local
 
@@ -135,7 +152,7 @@ npm test
 - Khong commit `.env`.
 - Khong log Page Access Token.
 - Page Access Token duoc luu bang AES-256-GCM.
-- Frontend chi hien token masked.
+- Frontend khong hien token da luu; form chi nhan token moi khi tao/sua Page.
 - Meta API khong duoc goi tu client/browser.
 
 ## Cau truc chinh

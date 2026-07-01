@@ -51,7 +51,7 @@ export async function getDashboardSummary() {
       where: { status: "FAILED" },
       orderBy: { finishedAt: "desc" },
       take: 5,
-      include: { socialPost: { select: { caption: true } } }
+      include: { socialPost: { select: { id: true, caption: true, facebookPage: { select: { name: true } } } } }
     })
   ]);
 
