@@ -1,123 +1,124 @@
-import { randomUUID } from "node:crypto";
-import { AppError } from "../../lib/constants";
+import { access } from "node:fs/promises";
 import type { PublishReelInput, PublishReelResult, StartReelUploadResult } from "../../types/facebook";
+import { MetaApiNotImplementedError, ValidationError } from "../errors";
 import { env } from "../env";
 import { logger } from "../logger";
 
+type MetaServiceOptions = {
+  dryRun?: boolean;
+};
+
 export class MetaService {
+  private readonly dryRunOverride?: boolean;
+
+  constructor(options: MetaServiceOptions = {}) {
+    this.dryRunOverride = options.dryRun;
+  }
+
   async testPageToken(pageId: string, accessToken: string): Promise<boolean> {
     this.assertTokenInput(pageId, accessToken);
 
-    if (env.DRY_RUN) {
-      logger.info({
-        step: "meta_test_token_dry_run",
-        message: "Skipped real token validation because DRY_RUN is enabled.",
-        meta: { pageId }
-      });
+    if (this.isDryRun()) {
+      logger.info("Skipped real token validation because DRY_RUN is enabled.", { step: "meta_test_token_dry_run", pageId });
       return true;
     }
 
-    throw new AppError("Real Meta token validation is not implemented in this skeleton.", {
-      statusCode: 400,
-      code: "META_CLIENT_STUB",
-      retryable: false
-    });
+    throw new MetaApiNotImplementedError();
   }
 
-  async startReelUpload(pageId: string, accessToken: string): Promise<StartReelUploadResult> {
+  async startReelUpload(
+    pageId: string,
+    accessToken: string,
+    dryRun = this.isDryRun()
+  ): Promise<StartReelUploadResult> {
     this.assertTokenInput(pageId, accessToken);
 
-    if (env.DRY_RUN) {
+    if (dryRun) {
+      const timestamp = Date.now();
       return {
-        videoId: `dry-run-video-${randomUUID()}`,
-        uploadUrl: "dry-run://facebook-reels-upload"
+        videoId: `mock_video_${timestamp}`,
+        uploadUrl: `mock_upload_url_${timestamp}`
       };
     }
 
-    throw new AppError("Real Meta Reels upload start is not implemented in this skeleton.", {
-      statusCode: 400,
-      code: "META_CLIENT_STUB",
-      retryable: false
-    });
+    throw new MetaApiNotImplementedError();
   }
 
-  async uploadVideo(uploadUrl: string, accessToken: string, filePath: string): Promise<void> {
+  async uploadVideo(uploadUrl: string, accessToken: string, filePath: string, dryRun = this.isDryRun()): Promise<void> {
     if (!uploadUrl || !accessToken || !filePath) {
-      throw new AppError("Upload URL, token, and file path are required.", {
-        statusCode: 400,
-        code: "VALIDATION_ERROR",
-        retryable: false
-      });
+      throw new ValidationError("Upload URL, token, and file path are required.");
     }
 
-    if (env.DRY_RUN) {
-      logger.info({
+    if (dryRun) {
+      await this.assertFileExists(filePath);
+      logger.info("Skipped real binary upload because DRY_RUN is enabled.", {
         step: "meta_upload_video_dry_run",
-        message: "Skipped real binary upload because DRY_RUN is enabled.",
-        meta: { uploadUrl, filePath }
+        uploadUrl,
+        filePath
       });
       return;
     }
 
-    throw new AppError("Real Meta binary upload is not implemented in this skeleton.", {
-      statusCode: 400,
-      code: "META_CLIENT_STUB",
-      retryable: false
-    });
+    throw new MetaApiNotImplementedError();
   }
 
   async finishReelPublish(
     pageId: string,
     accessToken: string,
     videoId: string,
-    caption: string
+    caption: string,
+    dryRun = this.isDryRun()
   ): Promise<Record<string, unknown>> {
     this.assertTokenInput(pageId, accessToken);
 
     if (!videoId || !caption.trim()) {
-      throw new AppError("Video ID and caption are required to finish publishing.", {
-        statusCode: 400,
-        code: "VALIDATION_ERROR",
-        retryable: false
-      });
+      throw new ValidationError("Video ID and caption are required to finish publishing.");
     }
 
-    if (env.DRY_RUN) {
+    if (dryRun) {
       return {
-        id: `dry-run-post-${randomUUID()}`,
+        id: `mock_post_${Date.now()}`,
         video_id: videoId,
         status: "DRY_RUN_OK"
       };
     }
 
-    throw new AppError("Real Meta Reels finish publish is not implemented in this skeleton.", {
-      statusCode: 400,
-      code: "META_CLIENT_STUB",
-      retryable: false
-    });
+    throw new MetaApiNotImplementedError();
   }
 
   async publishReel(input: PublishReelInput): Promise<PublishReelResult> {
-    if (!input.caption.trim()) {
-      throw new AppError("Caption is required.", {
-        statusCode: 400,
-        code: "VALIDATION_ERROR",
-        retryable: false
-      });
+    this.assertTokenInput(input.pageId, input.accessToken);
+
+    if (!input.videoPath) {
+      throw new ValidationError("Video path is required.");
     }
 
-    const start = await this.startReelUpload(input.pageId, input.accessToken);
-    await this.uploadVideo(start.uploadUrl, input.accessToken, input.filePath);
-    const finish = await this.finishReelPublish(input.pageId, input.accessToken, start.videoId, input.caption);
+    if (!input.caption.trim()) {
+      throw new ValidationError("Caption is required.");
+    }
+
+    const dryRun = this.isDryRun(input.dryRun);
+    if (!dryRun) {
+      throw new MetaApiNotImplementedError();
+    }
+
+    const start = await this.startReelUpload(input.pageId, input.accessToken, dryRun);
+    await this.uploadVideo(start.uploadUrl, input.accessToken, input.videoPath, dryRun);
+    const finish = await this.finishReelPublish(
+      input.pageId,
+      input.accessToken,
+      start.videoId,
+      input.caption,
+      dryRun
+    );
 
     return {
       facebookVideoId: start.videoId,
       facebookPostId: typeof finish.id === "string" ? finish.id : undefined,
-      dryRun: env.DRY_RUN,
       rawResponse: {
         upload: start,
         finish,
-        dryRun: env.DRY_RUN,
+        dryRun: true,
         graphVersion: env.META_GRAPH_VERSION
       }
     };
@@ -125,12 +126,18 @@ export class MetaService {
 
   private assertTokenInput(pageId: string, accessToken: string) {
     if (!pageId || !accessToken) {
-      throw new AppError("Page ID and Page Access Token are required.", {
-        statusCode: 400,
-        code: "VALIDATION_ERROR",
-        retryable: false
-      });
+      throw new ValidationError("Page ID and Page Access Token are required.");
     }
+  }
+
+  private async assertFileExists(filePath: string): Promise<void> {
+    await access(filePath).catch(() => {
+      throw new ValidationError(`Video file does not exist: ${filePath}`, "VIDEO_FILE_MISSING");
+    });
+  }
+
+  private isDryRun(inputDryRun?: boolean): boolean {
+    return inputDryRun ?? this.dryRunOverride ?? env.DRY_RUN;
   }
 }
 

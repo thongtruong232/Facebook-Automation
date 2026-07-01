@@ -1,5 +1,5 @@
 import { SocialPostStatus, SocialPostType } from "@prisma/client";
-import { AppError } from "../../lib/constants";
+import { ValidationError } from "../errors";
 import { prisma } from "../db";
 import { env } from "../env";
 import { createPostSchema } from "../validators/post.validator";
@@ -31,55 +31,59 @@ export async function createDraftPost(input: unknown) {
       caption: data.caption,
       scheduledAt: new Date(data.scheduledAt),
       status: "DRAFT",
-      hashtags: data.hashtags,
-      internalNote: data.internalNote,
       maxAttempts: env.MAX_RETRY
     }
   });
 }
 
 export async function schedulePost(postId: string, scheduledAt: Date): Promise<void> {
-  const post = await prisma.socialPost.findUniqueOrThrow({
+  const post = await prisma.socialPost.findUnique({
     where: { id: postId },
     select: { status: true, facebookVideoId: true }
   });
 
+  if (!post) {
+    throw new ValidationError("Social post was not found.", "POST_NOT_FOUND", 404);
+  }
+
   if (post.status === "PUBLISHED" || post.facebookVideoId) {
-    throw new AppError("Published posts cannot be scheduled again.", {
-      statusCode: 400,
-      code: "IDEMPOTENCY_GUARD",
-      retryable: false
-    });
+    throw new ValidationError("Published posts cannot be scheduled again.", "IDEMPOTENCY_GUARD");
   }
 
   await prisma.socialPost.update({
     where: { id: postId },
     data: {
       scheduledAt,
-      status: SocialPostStatus.QUEUED,
+      status: SocialPostStatus.READY,
       lastError: null
     }
   });
+
+  const { createPublishJobForPost } = await import("./job.service");
+  await createPublishJobForPost(postId);
 }
 
 export async function cancelPost(postId: string): Promise<void> {
-  await prisma.$transaction([
-    prisma.publishJob.updateMany({
-      where: {
-        socialPostId: postId,
-        status: { in: ["PENDING", "RUNNING"] }
-      },
-      data: {
-        status: "CANCELLED",
-        finishedAt: new Date(),
-        lockedAt: null
-      }
-    }),
-    prisma.socialPost.update({
-      where: { id: postId },
-      data: { status: "CANCELLED" }
-    })
-  ]);
+  const post = await prisma.socialPost.findUnique({
+    where: { id: postId },
+    select: { status: true }
+  });
+
+  if (!post) {
+    throw new ValidationError("Social post was not found.", "POST_NOT_FOUND", 404);
+  }
+
+  if (post.status === "PROCESSING" || post.status === "PUBLISHED") {
+    throw new ValidationError("Processing or published posts cannot be cancelled.", "POST_NOT_CANCELABLE");
+  }
+
+  const { cancelPendingJobsForPost } = await import("./job.service");
+  await cancelPendingJobsForPost(postId);
+
+  await prisma.socialPost.update({
+    where: { id: postId },
+    data: { status: "CANCELLED" }
+  });
 }
 
 export async function markPostProcessing(postId: string): Promise<void> {
@@ -105,17 +109,6 @@ export async function markPostPublished(
       facebookVideoId,
       facebookPostId,
       publishedAt: new Date(),
-      lastError: null
-    }
-  });
-}
-
-export async function markPostDryRunChecked(postId: string): Promise<void> {
-  await prisma.socialPost.update({
-    where: { id: postId },
-    data: {
-      status: "READY",
-      dryRunCheckedAt: new Date(),
       lastError: null
     }
   });

@@ -37,6 +37,7 @@ docker compose up -d postgres redis
 ```bash
 npx prisma generate
 npx prisma migrate dev
+npm run prisma:seed
 ```
 
 5. Chay Next.js dev server:
@@ -105,7 +106,7 @@ npx prisma generate
 5. Chay worker voi `DRY_RUN=true`.
 6. Kiem tra `/jobs` va `/logs`.
 
-Khi `DRY_RUN=true`, worker validate du lieu va ghi log `dry_run_ok`, nhung khong goi Meta API that va khong set post thanh `PUBLISHED`.
+Khi `DRY_RUN=true`, worker validate du lieu, khong goi Meta API that, tra ve `mock_video_<timestamp>` va `mock_post_<timestamp>`, sau do set post `PUBLISHED` va job `SUCCESS`.
 
 ## Scripts
 
@@ -118,6 +119,7 @@ npm run worker:build
 npm run worker:start
 npm run prisma:generate
 npm run prisma:migrate
+npm run prisma:seed
 npm run prisma:studio
 npm run lint
 npm run typecheck

@@ -1,26 +1,33 @@
-import type { Prisma } from "@prisma/client";
-import { AppError, getRetryDelayMs, sanitizeError, toErrorLike } from "../../lib/constants";
+import type { Prisma, PublishJob } from "@prisma/client";
+import { sanitizeError } from "../../lib/constants";
+import { addBackoffDelay } from "../../lib/time";
+import { getErrorCode, getErrorMessage, isRetryableError, ValidationError } from "../errors";
 import { prisma } from "../db";
 import { env } from "../env";
 
-export async function createPublishJobForPost(postId: string): Promise<void> {
-  const post = await prisma.socialPost.findUniqueOrThrow({
+export async function createPublishJobForPost(postId: string): Promise<PublishJob> {
+  const post = await prisma.socialPost.findUnique({
     where: { id: postId },
     select: {
       id: true,
       scheduledAt: true,
       maxAttempts: true,
       status: true,
-      facebookVideoId: true
+      facebookVideoId: true,
+      type: true
     }
   });
 
+  if (!post) {
+    throw new ValidationError("Social post was not found.", "POST_NOT_FOUND", 404);
+  }
+
   if (post.status === "PUBLISHED" || post.facebookVideoId) {
-    throw new AppError("Post is already published or has a video ID.", {
-      statusCode: 400,
-      code: "IDEMPOTENCY_GUARD",
-      retryable: false
-    });
+    throw new ValidationError("Post is already published or has a video ID.", "IDEMPOTENCY_GUARD");
+  }
+
+  if (!["READY", "QUEUED", "DRAFT"].includes(post.status)) {
+    throw new ValidationError(`Cannot create publish job for post status ${post.status}.`, "INVALID_POST_STATUS");
   }
 
   const activeJob = await prisma.publishJob.findFirst({
@@ -28,14 +35,13 @@ export async function createPublishJobForPost(postId: string): Promise<void> {
       socialPostId: postId,
       status: { in: ["PENDING", "RUNNING"] }
     },
-    select: { id: true }
   });
 
   if (activeJob) {
-    return;
+    return activeJob;
   }
 
-  await prisma.publishJob.create({
+  const job = await prisma.publishJob.create({
     data: {
       socialPostId: postId,
       jobType: "PUBLISH_REEL",
@@ -44,20 +50,33 @@ export async function createPublishJobForPost(postId: string): Promise<void> {
       maxAttempts: post.maxAttempts || env.MAX_RETRY
     }
   });
+
+  await prisma.socialPost.update({
+    where: { id: postId },
+    data: { status: "QUEUED" }
+  });
+
+  return job;
 }
 
 export async function getDueJobs(limit: number) {
-  const now = new Date();
-  const candidates = await prisma.publishJob.findMany({
+  return prisma.publishJob.findMany({
     where: {
       status: "PENDING",
-      runAt: { lte: now }
+      runAt: { lte: new Date() },
+      attempts: { lt: prisma.publishJob.fields.maxAttempts }
     },
-    orderBy: { runAt: "asc" },
-    take: Math.max(limit * 2, limit)
+    orderBy: [{ runAt: "asc" }, { createdAt: "asc" }],
+    take: limit,
+    include: {
+      socialPost: {
+        include: {
+          facebookPage: true,
+          mediaAsset: true
+        }
+      }
+    }
   });
-
-  return candidates.filter((job) => job.attempts < job.maxAttempts).slice(0, limit);
 }
 
 export async function lockJob(jobId: string, workerId: string): Promise<boolean> {
@@ -68,11 +87,8 @@ export async function lockJob(jobId: string, workerId: string): Promise<boolean>
       lockedAt: null
     },
     data: {
-      status: "RUNNING",
       lockedAt: new Date(),
-      lockedBy: workerId,
-      startedAt: new Date(),
-      attempts: { increment: 1 }
+      lockedBy: workerId
     }
   });
 
@@ -86,6 +102,7 @@ export async function markJobSuccess(jobId: string, response: unknown): Promise<
       status: "SUCCESS",
       finishedAt: new Date(),
       lockedAt: null,
+      lockedBy: null,
       errorCode: null,
       errorMessage: null,
       rawResponseJson: sanitizeError(response) as Prisma.InputJsonValue
@@ -93,38 +110,24 @@ export async function markJobSuccess(jobId: string, response: unknown): Promise<
   });
 }
 
-export async function markJobFailed(jobId: string, error: Error): Promise<void> {
-  const errorLike = toErrorLike(error);
-  await prisma.publishJob.update({
-    where: { id: jobId },
-    data: {
-      status: "FAILED",
-      finishedAt: new Date(),
-      lockedAt: null,
-      errorCode: errorLike.code ?? null,
-      errorMessage: errorLike.message ?? "Unknown error.",
-      rawResponseJson: sanitizeError(error) as Prisma.InputJsonValue
-    }
-  });
-}
-
-export async function markJobRetryableFailure(jobId: string, error: unknown): Promise<void> {
+export async function markJobFailed(jobId: string, error: unknown): Promise<void> {
   const job = await prisma.publishJob.findUniqueOrThrow({
     where: { id: jobId },
-    select: { attempts: true }
+    select: { attempts: true, maxAttempts: true }
   });
-  const errorLike = toErrorLike(error);
-  const delayMs = getRetryDelayMs(job.attempts, errorLike.retryAfterMs);
+  const retryable = isRetryableError(error);
+  const finalFailed = !retryable || job.attempts >= job.maxAttempts;
 
   await prisma.publishJob.update({
     where: { id: jobId },
     data: {
-      status: "PENDING",
-      runAt: new Date(Date.now() + delayMs),
-      finishedAt: new Date(),
+      status: finalFailed ? "FAILED" : "PENDING",
+      runAt: finalFailed ? undefined : addBackoffDelay(job.attempts),
+      finishedAt: finalFailed ? new Date() : null,
       lockedAt: null,
-      errorCode: errorLike.code ?? null,
-      errorMessage: errorLike.message ?? "Retryable error.",
+      lockedBy: null,
+      errorCode: getErrorCode(error),
+      errorMessage: getErrorMessage(error),
       rawResponseJson: sanitizeError(error) as Prisma.InputJsonValue
     }
   });
@@ -136,12 +139,12 @@ export async function retryJob(jobId: string): Promise<void> {
     include: { socialPost: { select: { status: true } } }
   });
 
+  if (job.status !== "FAILED") {
+    throw new ValidationError("Only failed jobs can be retried manually.", "JOB_NOT_FAILED");
+  }
+
   if (job.socialPost.status === "PUBLISHED") {
-    throw new AppError("Published posts cannot be retried.", {
-      statusCode: 400,
-      code: "IDEMPOTENCY_GUARD",
-      retryable: false
-    });
+    throw new ValidationError("Published posts cannot be retried.", "IDEMPOTENCY_GUARD");
   }
 
   await prisma.$transaction([
@@ -150,13 +153,14 @@ export async function retryJob(jobId: string): Promise<void> {
       data: {
         status: "PENDING",
         runAt: new Date(),
-        attempts: 0,
         lockedAt: null,
         lockedBy: null,
         startedAt: null,
         finishedAt: null,
         errorCode: null,
-        errorMessage: null
+        errorMessage: null,
+        // TODO: Decide whether manual retry should extend maxAttempts or require a separate override workflow.
+        maxAttempts: job.attempts >= job.maxAttempts ? job.attempts + 1 : job.maxAttempts
       }
     }),
     prisma.socialPost.update({
@@ -167,6 +171,21 @@ export async function retryJob(jobId: string): Promise<void> {
       }
     })
   ]);
+}
+
+export async function cancelPendingJobsForPost(postId: string): Promise<void> {
+  await prisma.publishJob.updateMany({
+    where: {
+      socialPostId: postId,
+      status: "PENDING"
+    },
+    data: {
+      status: "CANCELLED",
+      finishedAt: new Date(),
+      lockedAt: null,
+      lockedBy: null
+    }
+  });
 }
 
 export async function retryLatestJobForPost(postId: string): Promise<void> {
@@ -218,7 +237,8 @@ export async function markJobRunning(jobId: string): Promise<void> {
     where: { id: jobId },
     data: {
       status: "RUNNING",
-      startedAt: new Date()
+      startedAt: new Date(),
+      attempts: { increment: 1 }
     }
   });
 }

@@ -1,3 +1,12 @@
+export function now(): Date {
+  return new Date();
+}
+
+export function addBackoffDelay(attempt: number): Date {
+  const minutes = attempt <= 1 ? 1 : attempt === 2 ? 3 : attempt === 3 ? 10 : 30;
+  return new Date(now().getTime() + minutes * 60_000);
+}
+
 export function startOfDay(date = new Date()): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }

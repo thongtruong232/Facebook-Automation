@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { getRetryDelayMs, isRetryableError, sanitizeError } from "./constants";
+import { sanitizeError } from "./constants";
+import { isRetryableError } from "../server/errors";
+import { addBackoffDelay } from "./time";
 
 describe("retry classification", () => {
   it("retries rate limits, timeouts, 5xx, and temporary network errors", () => {
@@ -16,10 +18,11 @@ describe("retry classification", () => {
     expect(isRetryableError(new Error("invalid token"))).toBe(false);
   });
 
-  it("uses capped backoff delays by attempt number", () => {
-    expect(getRetryDelayMs(1)).toBe(1000);
-    expect(getRetryDelayMs(4)).toBe(30000);
-    expect(getRetryDelayMs(9)).toBe(30000);
+  it("uses capped minute-based backoff delays by attempt number", () => {
+    const base = Date.now();
+
+    expect(addBackoffDelay(1).getTime()).toBeGreaterThanOrEqual(base + 60_000);
+    expect(addBackoffDelay(4).getTime()).toBeGreaterThanOrEqual(base + 30 * 60_000);
   });
 });
 

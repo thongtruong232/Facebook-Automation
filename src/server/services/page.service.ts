@@ -12,15 +12,14 @@ export async function listPages() {
       id: true,
       pageId: true,
       name: true,
-      tokenStatus: true,
       status: true,
       dailyLimit: true,
       timezone: true,
       lastTokenCheckAt: true,
-      lastError: true,
+      lastTokenError: true,
       createdAt: true,
       accessTokenEncrypted: true,
-      _count: { select: { posts: true } }
+      _count: { select: { socialPosts: true } }
     }
   });
 
@@ -48,7 +47,6 @@ export async function createPage(input: unknown) {
       id: true,
       pageId: true,
       name: true,
-      tokenStatus: true,
       status: true,
       dailyLimit: true,
       timezone: true,
@@ -65,9 +63,9 @@ export async function testPageToken(id: string): Promise<boolean> {
   await prisma.facebookPage.update({
     where: { id },
     data: {
-      tokenStatus: valid ? "valid" : "invalid",
+      status: valid ? "ACTIVE" : "TOKEN_INVALID",
       lastTokenCheckAt: new Date(),
-      lastError: valid ? null : "Token validation failed."
+      lastTokenError: valid ? null : "Token validation failed."
     }
   });
 

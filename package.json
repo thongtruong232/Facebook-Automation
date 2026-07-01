@@ -11,6 +11,7 @@
     "worker:start": "node dist/workers/reels-publisher.worker.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "prisma:seed": "tsx prisma/seed.ts",
     "prisma:studio": "prisma studio",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",

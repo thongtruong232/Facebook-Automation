@@ -9,34 +9,45 @@ type CreateJobLogInput = {
   level: LogLevel;
   step: string;
   message: string;
-  meta?: unknown;
+  metaJson?: unknown;
 };
 
 export async function createJobLog(input: CreateJobLogInput): Promise<void> {
-  await prisma.jobLog.create({
-    data: {
+  if (!input.jobId && !input.socialPostId) return;
+
+  try {
+    await prisma.jobLog.create({
+      data: {
+        jobId: input.jobId,
+        socialPostId: input.socialPostId,
+        level: input.level,
+        step: input.step,
+        message: input.message,
+        metaJson: input.metaJson ? (sanitizeError(input.metaJson) as Prisma.InputJsonValue) : undefined
+      }
+    });
+  } catch (error) {
+    logger.warn("Failed to persist job log.", {
+      step: "job_log_persist_failed",
+      error: sanitizeError(error),
       jobId: input.jobId,
-      socialPostId: input.socialPostId,
-      level: input.level,
-      step: input.step,
-      message: input.message,
-      metaJson: input.meta ? (sanitizeError(input.meta) as Prisma.InputJsonValue) : undefined
-    }
-  });
+      socialPostId: input.socialPostId
+    });
+  }
 }
 
 export async function logInfo(input: Omit<CreateJobLogInput, "level">): Promise<void> {
-  logger.info({ step: input.step, message: input.message, meta: input.meta });
+  logger.info(input.message, { step: input.step, meta: input.metaJson });
   await createJobLog({ ...input, level: "INFO" });
 }
 
 export async function logWarning(input: Omit<CreateJobLogInput, "level">): Promise<void> {
-  logger.warning({ step: input.step, message: input.message, meta: input.meta });
+  logger.warn(input.message, { step: input.step, meta: input.metaJson });
   await createJobLog({ ...input, level: "WARNING" });
 }
 
 export async function logError(input: Omit<CreateJobLogInput, "level">): Promise<void> {
-  logger.error({ step: input.step, message: input.message, meta: input.meta });
+  logger.error(input.message, { step: input.step, meta: input.metaJson });
   await createJobLog({ ...input, level: "ERROR" });
 }
 

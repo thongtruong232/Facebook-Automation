@@ -1,7 +1,7 @@
-import { sanitizeError } from "../lib/constants";
+import { isSensitiveKey, sanitizeError } from "../lib/constants";
 import { env } from "./env";
 
-type LogLevel = "debug" | "info" | "warning" | "error" | "critical";
+type LogLevel = "debug" | "info" | "warn" | "error" | "critical";
 
 type LogPayload = {
   step?: string;
@@ -9,14 +9,17 @@ type LogPayload = {
   meta?: unknown;
 };
 
-function write(level: LogLevel, payload: LogPayload) {
+type LogInput = string | LogPayload;
+
+function write(level: LogLevel, input: LogInput, meta?: unknown) {
+  const payload = typeof input === "string" ? { message: input, meta } : input;
   const entry = {
     timestamp: new Date().toISOString(),
-    level: level.toUpperCase(),
+    level: level === "warn" ? "WARNING" : level.toUpperCase(),
     app: "facebook-reels-automation",
     step: payload.step,
     message: payload.message,
-    meta: payload.meta ? sanitizeError(payload.meta) : undefined
+    meta: payload.meta ? sanitizeMeta(payload.meta) : undefined
   };
 
   const line = JSON.stringify(entry);
@@ -33,9 +36,24 @@ function write(level: LogLevel, payload: LogPayload) {
 }
 
 export const logger = {
-  debug: (payload: LogPayload) => write("debug", payload),
-  info: (payload: LogPayload) => write("info", payload),
-  warning: (payload: LogPayload) => write("warning", payload),
-  error: (payload: LogPayload) => write("error", payload),
-  critical: (payload: LogPayload) => write("critical", payload)
+  debug: (input: LogInput, meta?: unknown) => write("debug", input, meta),
+  info: (input: LogInput, meta?: unknown) => write("info", input, meta),
+  warn: (input: LogInput, meta?: unknown) => write("warn", input, meta),
+  warning: (input: LogInput, meta?: unknown) => write("warn", input, meta),
+  error: (input: LogInput, meta?: unknown) => write("error", input, meta),
+  critical: (input: LogInput, meta?: unknown) => write("critical", input, meta)
 };
+
+export function sanitizeMeta(meta: unknown): unknown {
+  if (Array.isArray(meta)) {
+    return meta.map((item) => sanitizeMeta(item));
+  }
+
+  if (typeof meta === "object" && meta !== null) {
+    return Object.fromEntries(
+      Object.entries(meta).map(([key, value]) => [key, isSensitiveKey(key) ? "[REDACTED]" : sanitizeMeta(value)])
+    );
+  }
+
+  return sanitizeError(meta);
+}

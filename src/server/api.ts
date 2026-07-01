@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { sanitizeError, toErrorLike } from "../lib/constants";
+import { sanitizeError } from "../lib/constants";
+import { getErrorMessage } from "./errors";
 import { jsonResponse } from "./http";
 
 export async function readRequestInput(request: Request): Promise<Record<string, string>> {
@@ -21,12 +22,16 @@ export function redirectTo(request: Request, pathname: string): NextResponse {
 }
 
 export function apiError(error: unknown): Response {
-  const errorLike = toErrorLike(error);
+  const statusCode =
+    typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number"
+      ? error.statusCode
+      : 500;
+
   return jsonResponse(
     {
-      error: errorLike.message ?? "Request failed.",
+      error: getErrorMessage(error),
       details: sanitizeError(error)
     },
-    { status: errorLike.statusCode ?? 500 }
+    { status: statusCode }
   );
 }

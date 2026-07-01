@@ -1,15 +1,14 @@
 export type PublishReelInput = {
   pageId: string;
-  pageName?: string;
   accessToken: string;
-  filePath: string;
+  videoPath: string;
   caption: string;
+  dryRun?: boolean;
 };
 
 export type PublishReelResult = {
   facebookVideoId: string;
   facebookPostId?: string;
-  dryRun: boolean;
   rawResponse: Record<string, unknown>;
 };
 

@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { z } from "zod";
 
 const numberFromEnv = (fallback: number) =>
@@ -19,12 +20,12 @@ const booleanFromEnv = (fallback: boolean) =>
 const envSchema = z.object({
   APP_ENV: z.enum(["development", "test", "production"]).default("development"),
   APP_URL: z.string().url().default("http://localhost:3000"),
-  DATABASE_URL: z.string().min(1).default("postgresql://app:password@localhost:5432/facebook_automation"),
-  REDIS_URL: z.string().min(1).default("redis://localhost:6379"),
+  DATABASE_URL: z.string().min(1),
+  REDIS_URL: z.string().min(1),
   META_GRAPH_VERSION: z.string().min(1).default("v25.0"),
   META_APP_ID: z.string().default(""),
   META_APP_SECRET: z.string().default(""),
-  TOKEN_ENCRYPTION_KEY: z.string().min(1).default("change-this-32-byte-key"),
+  TOKEN_ENCRYPTION_KEY: z.string().min(1),
   DRY_RUN: booleanFromEnv(true),
   STORAGE_DRIVER: z.enum(["local", "s3", "wasabi"]).default("local"),
   UPLOAD_DIR: z.string().min(1).default("./uploads"),

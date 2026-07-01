@@ -13,9 +13,15 @@ enum UserRole {
   VIEWER
 }
 
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
 enum PageStatus {
   ACTIVE
   DISABLED
+  TOKEN_INVALID
 }
 
 enum MediaType {
@@ -71,8 +77,8 @@ model User {
   email        String       @unique
   passwordHash String       @map("password_hash")
   role         UserRole     @default(EDITOR)
-  status       String       @default("active")
-  posts        SocialPost[]
+  status       UserStatus   @default(ACTIVE)
+  socialPosts  SocialPost[]
   auditLogs    AuditLog[]
   createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -86,24 +92,22 @@ model FacebookPage {
   pageId               String       @unique @map("page_id")
   name                 String
   accessTokenEncrypted String       @map("access_token_encrypted")
-  tokenStatus          String       @default("unknown") @map("token_status")
-  status               PageStatus   @default(ACTIVE)
   dailyLimit           Int          @default(30) @map("daily_limit")
   timezone             String       @default("Asia/Ho_Chi_Minh")
+  status               PageStatus   @default(ACTIVE)
   lastTokenCheckAt     DateTime?    @map("last_token_check_at") @db.Timestamptz(6)
-  lastError            String?      @map("last_error")
-  posts                SocialPost[]
+  lastTokenError       String?      @map("last_token_error") @db.Text
+  socialPosts          SocialPost[]
   createdAt            DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([status])
-  @@index([tokenStatus])
   @@map("facebook_pages")
 }
 
 model MediaAsset {
   id              String       @id @default(uuid()) @db.Uuid
-  type            MediaType
+  type            MediaType    @default(VIDEO)
   filename        String
   originalName    String?      @map("original_name")
   storageDisk     String       @default("local") @map("storage_disk")
@@ -113,8 +117,7 @@ model MediaAsset {
   sizeBytes       BigInt?      @map("size_bytes")
   durationSeconds Int?         @map("duration_seconds")
   status          MediaStatus  @default(READY)
-  metadataJson    Json?        @map("metadata_json")
-  posts           SocialPost[]
+  socialPosts     SocialPost[]
   createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -127,18 +130,15 @@ model SocialPost {
   facebookPageId   String           @map("facebook_page_id") @db.Uuid
   mediaAssetId     String?          @map("media_asset_id") @db.Uuid
   type             SocialPostType   @default(REEL)
-  caption          String
+  caption          String           @db.Text
   scheduledAt      DateTime         @map("scheduled_at") @db.Timestamptz(6)
   status           SocialPostStatus @default(DRAFT)
   attempts         Int              @default(0)
   maxAttempts      Int              @default(3) @map("max_attempts")
   facebookVideoId  String?          @map("facebook_video_id")
   facebookPostId   String?          @map("facebook_post_id")
-  lastError        String?          @map("last_error")
+  lastError        String?          @map("last_error") @db.Text
   publishedAt      DateTime?        @map("published_at") @db.Timestamptz(6)
-  dryRunCheckedAt  DateTime?        @map("dry_run_checked_at") @db.Timestamptz(6)
-  internalNote     String?          @map("internal_note")
-  hashtags         String?
   createdById      String?          @map("created_by") @db.Uuid
   facebookPage     FacebookPage     @relation(fields: [facebookPageId], references: [id])
   mediaAsset       MediaAsset?      @relation(fields: [mediaAssetId], references: [id])
@@ -148,9 +148,12 @@ model SocialPost {
   createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  @@index([status, scheduledAt])
-  @@index([facebookPageId, status])
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([facebookPageId])
   @@index([mediaAssetId])
+  @@index([createdById])
+  @@index([publishedAt])
   @@map("social_posts")
 }
 
@@ -168,15 +171,16 @@ model PublishJob {
   lockedAt        DateTime?        @map("locked_at") @db.Timestamptz(6)
   lockedBy        String?          @map("locked_by")
   errorCode       String?          @map("error_code")
-  errorMessage    String?          @map("error_message")
+  errorMessage    String?          @map("error_message") @db.Text
   rawResponseJson Json?            @map("raw_response_json")
   socialPost      SocialPost       @relation(fields: [socialPostId], references: [id])
-  logs            JobLog[]
+  jobLogs         JobLog[]
   createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  @@index([status, runAt])
-  @@index([socialPostId, status])
+  @@index([status])
+  @@index([runAt])
+  @@index([socialPostId])
   @@index([lockedAt])
   @@map("publish_jobs")
 }
@@ -187,15 +191,16 @@ model JobLog {
   socialPostId String?      @map("social_post_id") @db.Uuid
   level        LogLevel
   step         String
-  message      String
+  message      String       @db.Text
   metaJson     Json?        @map("meta_json")
   job          PublishJob?  @relation(fields: [jobId], references: [id])
   socialPost   SocialPost?  @relation(fields: [socialPostId], references: [id])
   createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  @@index([jobId, createdAt])
-  @@index([socialPostId, createdAt])
-  @@index([level, step])
+  @@index([jobId])
+  @@index([socialPostId])
+  @@index([level])
+  @@index([createdAt])
   @@map("job_logs")
 }
 
@@ -205,23 +210,21 @@ model AuditLog {
   action      String
   entityType  String   @map("entity_type")
   entityId    String?  @map("entity_id")
-  beforeJson  Json?    @map("before_json")
-  afterJson   Json?    @map("after_json")
-  ipAddress   String?  @map("ip_address")
-  userAgent   String?  @map("user_agent")
+  metaJson    Json?    @map("meta_json")
   user        User?    @relation(fields: [userId], references: [id])
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  @@index([entityType, entityId])
-  @@index([userId, createdAt])
+  @@index([userId])
+  @@index([entityType])
+  @@index([entityId])
+  @@index([createdAt])
   @@map("audit_logs")
 }
 
 model Setting {
   id          String   @id @default(uuid()) @db.Uuid
   key         String   @unique
-  value       Json
-  description String?
+  value       String   @db.Text
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
